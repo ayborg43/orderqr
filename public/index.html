@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#1f3fa6">
+<title>The Corner Table — QR Ordering Demo</title>
+<link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="hero">
+  <div class="hero__in">
+    <div class="hero__bar"><span class="hero__brand">The Corner Table</span><span class="badge plain">Demo payments only</span></div>
+    <div class="hero__grid">
+      <div>
+        <h1>Order from the table. <em>Watch it land</em> in the kitchen.</h1>
+        <p class="hero__lead">Guests scan the code on their table, order and pay from their phone. The ticket reaches the kitchen the moment the payment clears, and staff run the rest from one screen.</p>
+        <div class="hero__cta">
+          <a class="btn yolk lg" id="ctaGuest" href="/guest?table=5">Order as a guest</a>
+          <a class="btn ghost lg" href="/kitchen">Open the kitchen</a>
+        </div>
+      </div>
+      <div class="scan" id="scan">
+        <div class="plaque sm"><span class="plaque__label">Table</span><span class="plaque__num" id="scanNum">5</span></div>
+        <div class="scan__tag"><img id="scanQr" src="/qr?table=5" alt="QR code that opens the guest menu for this table" width="230" height="230"><p>This is the code on the table. Scan it with a phone on the same network, or use the button.</p></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap" style="padding-top:8px">
+  <section class="l-sec" style="margin-top:36px">
+    <h2>Pick a table</h2>
+    <p>This is what scanning a table’s QR code opens. Every table sees its own orders and its own bill.</p>
+    <div class="plaques" id="tables"></div>
+  </section>
+
+  <section class="l-sec">
+    <h2>Three screens, one order</h2>
+    <div class="doors">
+      <a class="door" href="/guest?table=5"><span class="door__who">Diner · phone</span><span class="door__text"><span class="door__name">Guest ordering</span><span class="door__what">Browse by category, customise, pay, and follow the order from received to served.</span></span><span id="d1"></span></a>
+      <a class="door" href="/kitchen"><span class="door__who">Kitchen · tablet or monitor</span><span class="door__text"><span class="door__name">Kitchen display</span><span class="door__what">Live tickets split by station, with how long each order has been waiting.</span></span><span id="d2"></span></a>
+      <a class="door" href="/admin"><span class="door__who">Manager · front of house</span><span class="door__text"><span class="door__name">Admin dashboard</span><span class="door__what">Orders, sold-out switches, printable table cards and surcharges.</span></span><span id="d3"></span></a>
+    </div>
+  </section>
+
+  <section class="l-sec">
+    <h2>Run the demo</h2>
+    <ol class="script">
+      <li>Open <a href="/guest?table=5">Table 5</a> as a guest. Add a <b>Smash Burger</b> with a cooking preference, extra cheese and the note “no onion”, then a lemonade.</li>
+      <li>Check out with the approving card. Note the order number and the itemised surcharges.</li>
+      <li>Open the <a href="/kitchen">kitchen display</a>. The burger shows under Grill and the lemonade under Drinks. Advance the order to Ready, then Served.</li>
+      <li>Back as the guest, watch the status change, order a dessert, then open the table’s bill.</li>
+      <li>In <a href="/admin">admin</a>, switch a drink off and try to order it. Then try the declining card, and a double-tap on Pay.</li>
+    </ol>
+  </section>
+
+  <section class="l-sec">
+    <h2>Test cards</h2>
+    <p>No real money moves. Pick one at checkout, or copy a number.</p>
+    <div class="testcards">
+      <div class="tc"><div class="tc__label"><span>Approves</span><span>Demo</span></div><div class="tc__num">4242 4242 4242 4242</div><div class="tc__foot"><span>Order goes to the kitchen</span><button class="btn" type="button" data-copy="4242 4242 4242 4242"></button></div></div>
+      <div class="tc no"><div class="tc__label"><span>Declines</span><span>Demo</span></div><div class="tc__num">4000 0000 0000 0002</div><div class="tc__foot"><span>No ticket is created</span><button class="btn" type="button" data-copy="4000 0000 0000 0002"></button></div></div>
+    </div>
+  </section>
+
+  <footer class="l-foot"><span>Demo only. Data is saved to <code>data/store.json</code>.</span><a href="/guest?table=999">Try an invalid table</a></footer>
+</main>
+<script src="/ui.js"></script>
+<script>
+const { $, $$, icon, esc } = UI;
+['d1', 'd2', 'd3'].forEach(id => $('#' + id).innerHTML = icon('arrow'));
+$$('[data-copy]').forEach(b => { b.innerHTML = icon('copy') + 'Copy'; b.onclick = async () => {
+  try { await navigator.clipboard.writeText(b.dataset.copy); b.innerHTML = icon('check') + 'Copied'; } catch { b.innerHTML = 'Select &amp; copy'; }
+  setTimeout(() => { b.innerHTML = icon('copy') + 'Copy'; }, 1800); }; });
+fetch('/api/tables').then(r => r.json()).then(({ tables }) => {
+  $('#tables').innerHTML = tables.map(t => {
+    const m = String(t.label).match(/^(.*\S)\s+(\S+)$/);
+    return `<a class="plaque sm" href="/guest?table=${encodeURIComponent(t.id)}" aria-label="Open ${esc(t.label)}"><span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : t.label)}</span></a>`;
+  }).join('');
+});
+</script>
+</body>
+</html>

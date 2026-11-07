@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f3fa6">
+<title>Order — The Corner Table</title>
+<link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="alert" aria-live="polite"></div>
+
+<header class="g-head">
+  <div class="g-head__in">
+    <div class="g-top">
+      <div class="g-brand"><span id="restName">The Corner Table</span><small>Order &amp; pay from your seat</small></div>
+      <button class="btn small" id="callStaff" type="button"><span id="bellIc"></span>Call staff</button>
+    </div>
+    <div class="g-table">
+      <div class="plaque" id="tablePlaque" aria-live="polite"><span class="plaque__label">Table</span><span class="plaque__num">–</span></div>
+      <p id="tableLabel">Browse, order and pay from your phone. No app needed.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="g-nav" id="catNav" aria-label="Menu sections" hidden><div class="g-nav__in" id="catNavIn"></div></nav>
+
+<main class="wrap" id="main">
+  <div class="g-tools" id="tools" hidden>
+    <label class="searchbox"><span class="sr">Search the menu</span><span id="searchIc"></span><input type="search" id="search" placeholder="Search the menu" autocomplete="off"></label>
+    <div class="chips" id="filters" role="group" aria-label="Dietary filters">
+      <button class="chip" type="button" data-f="" aria-pressed="true">All</button>
+      <button class="chip" type="button" data-f="vegan" aria-pressed="false">Vegan</button>
+      <button class="chip" type="button" data-f="vegetarian" aria-pressed="false">Vegetarian</button>
+      <button class="chip" type="button" data-f="gluten-free" aria-pressed="false">Gluten-free</button>
+      <button class="chip" type="button" data-f="spicy" aria-pressed="false">Spicy</button>
+    </div>
+  </div>
+  <div id="menu"><div class="g-empty muted">Loading the menu…</div></div>
+  <section class="g-orders" id="myOrders" aria-label="Your orders"></section>
+</main>
+
+<div class="cartbar" id="cartbar" hidden>
+  <div class="cartbar__info">
+    <span class="cartbar__bag"><span id="bagIc"></span><span class="cartbar__count" id="cartCount">0</span></span>
+    <div><strong id="cartSummary"></strong><div class="muted" id="cartTotal"></div></div>
+  </div>
+  <div class="row" style="gap:8px;flex-wrap:nowrap">
+    <button class="btn ghost small" type="button" id="viewBill">Bill</button>
+    <button class="btn yolk" type="button" id="checkoutBtn">Review &amp; pay</button>
+  </div>
+</div>
+
+<dialog class="sheet" id="itemDlg" aria-label="Customise item"><div id="itemBody"></div></dialog>
+
+<dialog class="sheet" id="payDlg" aria-labelledby="payTitle">
+  <div class="sheet__strip glaze glaze-mains"></div>
+  <button type="button" class="sheet__close" aria-label="Close" data-close id="payX"></button>
+  <div class="sheet__body">
+    <h3 class="sheet__title" id="payTitle">Review &amp; pay</h3>
+    <div id="payBody"></div>
+    <div class="paycard">
+      <div class="paycard__top"><span>Demo card</span><span class="paycard__stamp">No real money</span></div>
+      <label for="card">Card number</label>
+      <input type="tel" id="card" value="4242 4242 4242 4242" autocomplete="off" inputmode="numeric" maxlength="23">
+      <div class="quickfill">
+        <button type="button" data-card="4242 4242 4242 4242">Use approving card</button>
+        <button type="button" data-card="4000 0000 0000 0002">Use declining card</button>
+      </div>
+    </div>
+    <div id="payAlert"></div>
+  </div>
+  <div class="sheet__foot">
+    <button class="btn secondary lg" type="button" id="payCancel">Back</button>
+    <button class="btn lg block" type="button" id="payNow">Pay now</button>
+  </div>
+</dialog>
+
+<dialog class="sheet" id="billDlg" aria-labelledby="billTitle">
+  <div class="sheet__strip glaze glaze-desserts"></div>
+  <button type="button" class="sheet__close" aria-label="Close" data-close id="billX"></button>
+  <div class="sheet__body">
+    <h3 class="sheet__title" id="billTitle">Your table’s bill</h3>
+    <div id="billBody"></div>
+  </div>
+  <div class="sheet__foot"><button class="btn secondary block lg" type="button" id="billClose">Close</button></div>
+</dialog>
+
+<script src="/ui.js"></script>
+<script>
+const { $, $$, esc, fmt, icon, glaze, slug, dietTag, STEPS, toast, send } = UI;
+const tableId = new URLSearchParams(location.search).get('table');
+const cartKey = 'cart-' + tableId;
+let menu = [], cart = [], filter = '', idemKey = null, tableLabel = '', seenStatus = {};
+try { cart = JSON.parse(localStorage.getItem(cartKey) || '[]'); } catch { cart = []; }
+
+$('#bellIc').innerHTML = icon('bell'); $('#searchIc').innerHTML = icon('search'); $('#bagIc').innerHTML = icon('bag');
+$$('[data-close]').forEach(b => { b.innerHTML = icon('x'); b.onclick = () => b.closest('dialog').close(); });
+$$('dialog.sheet').forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close(); }));
+
+function setPlaque(label) {
+  const m = String(label).match(/^(.*\S)\s+(\S+)$/);
+  $('#tablePlaque').innerHTML = `<span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : label)}</span>`;
+}
+
+async function load() {
+  const { data: t } = await UI.api('/api/tables');
+  const table = (t.tables || []).find(x => x.id === String(tableId));
+  if (!table) {
+    setPlaque('Table ?'); $('#tablePlaque').style.background = 'var(--paprika)';
+    $('#tableLabel').textContent = 'We couldn’t find this table';
+    $('#menu').innerHTML = `<div class="table-error"><div class="plaque"><span class="plaque__label">Invalid</span><span class="plaque__num">?</span></div><h2>This QR code doesn’t match a table</h2><p class="muted">Please ask a member of staff for help, or re-scan the code printed on your table.</p></div>`;
+    toast('This QR code does not match a table. Please ask staff for help or re-scan the code on your table.', 'err');
+    $('#callStaff').hidden = true; return;
+  }
+  tableLabel = table.label; setPlaque(table.label);
+  $('#tableLabel').textContent = 'Browse, order and pay from your phone. No app needed.';
+  await loadMenu(); renderCart(); loadOrders();
+}
+async function loadMenu() {
+  const { data: m } = await UI.api('/api/menu');
+  $('#restName').textContent = m.restaurant; document.title = 'Order — ' + m.restaurant;
+  menu = m.items; $('#tools').hidden = false; renderMenu();
+}
+
+function dishRow(i) {
+  const out = !i.available;
+  return `<article class="dish ${out ? 'out' : ''}" data-id="${esc(i.id)}">
+    <div>
+      <h3 class="dish__name">${esc(i.name)}</h3>
+      <p class="dish__desc">${esc(i.desc)}</p>
+      <div class="dish__meta"><span class="price">${fmt(i.price)}</span>${out ? '<span class="badge soldout plain">Sold out</span>' : ''}${i.dietary.map(dietTag).join('')}</div>
+    </div>
+    <div class="dish__thumb ${glaze(i.category)}"><span class="dish__plate" aria-hidden="true">${esc(i.name.trim()[0])}</span>
+      ${out ? '' : `<button class="dish__add" type="button" aria-label="Customise and add ${esc(i.name)}">${icon('plus')}</button>`}</div>
+  </article>`;
+}
+function renderMenu() {
+  const q = $('#search').value.trim().toLowerCase();
+  const cats = [...new Set(menu.map(i => i.category))];
+  const secs = cats.map(cat => ({ cat, items: menu.filter(i => i.category === cat && (!filter || i.dietary.includes(filter)) && (i.name + ' ' + i.desc).toLowerCase().includes(q)) })).filter(s => s.items.length);
+  $('#menu').innerHTML = secs.map(({ cat, items }) => `<section class="g-sec" id="cat-${slug(cat)}" data-cat="${esc(cat)}">
+      <h2>${esc(cat)}<span class="strip ${glaze(cat)}"></span></h2><div class="menu-grid">${items.map(dishRow).join('')}</div></section>`).join('')
+    || `<div class="g-empty"><strong>No dishes match</strong>Try a different search or clear the filter.</div>`;
+  $('#catNav').hidden = !secs.length;
+  $('#catNavIn').innerHTML = secs.map(s => `<a href="#cat-${slug(s.cat)}" data-nav="cat-${slug(s.cat)}">${esc(s.cat)}</a>`).join('');
+  spy();
+}
+let io;
+function spy() {
+  io?.disconnect();
+  const links = $$('#catNavIn a'); if (!links.length) return;
+  const on = (id) => links.forEach(a => { const hit = a.dataset.nav === id; a.classList.toggle('on', hit); if (hit && a.scrollIntoView) { const bar = $('#catNavIn'); bar.scrollTo({ left: a.offsetLeft - 24, behavior: 'smooth' }); } });
+  io = new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) on(e.target.id); }, { rootMargin: '-25% 0px -65% 0px' });
+  $$('.g-sec').forEach(s => io.observe(s)); on($('.g-sec')?.id);
+}
+$('#catNavIn').addEventListener('click', e => {
+  const a = e.target.closest('a'); if (!a) return; e.preventDefault();
+  document.getElementById(a.dataset.nav)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+$('#menu').addEventListener('click', e => {
+  const row = e.target.closest('.dish'); if (!row || row.classList.contains('out')) return; openItem(row.dataset.id);
+});
+$('#search').addEventListener('input', renderMenu);
+$('#filters').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return; filter = b.dataset.f;
+  $$('#filters .chip').forEach(c => { const on = c === b; c.classList.toggle('on', on); c.setAttribute('aria-pressed', on); }); renderMenu();
+});
+
+/* ---------- item sheet ---------- */
+window.openItem = (id) => {
+  const i = menu.find(x => x.id === id); if (!i) return;
+  let qty = 1;
+  $('#itemBody').innerHTML = `
+    <div class="sheet__strip ${glaze(i.category)}"></div>
+    <button type="button" class="sheet__close" aria-label="Close" data-close>${icon('x')}</button>
+    <div class="sheet__body">
+      <h3 class="sheet__title">${esc(i.name)}</h3>
+      <div class="dish__meta"><span class="price">${fmt(i.price)}</span>${i.dietary.map(dietTag).join('')}</div>
+      <p class="muted sheet__desc">${esc(i.desc)}</p>
+      ${(i.modifierGroups || []).map(g => `<fieldset class="mods ${g.required ? 'need' : ''}" data-g="${esc(g.id)}">
+        <legend>${esc(g.name)}<span class="badge plain">${g.required ? 'Choose one' : 'Optional'}</span></legend>
+        ${g.options.map(o => `<label class="choice"><input type="${g.required ? 'radio' : 'checkbox'}" name="g-${esc(g.id)}" value="${esc(o.id)}" data-delta="${o.delta || 0}"><span class="mark">${g.required ? '' : icon('check')}</span><span>${esc(o.name)}</span><span class="delta">${o.delta ? '+' + fmt(o.delta) : ''}</span></label>`).join('')}
+      </fieldset>`).join('')}
+      <label class="field" style="margin-top:22px"><span>Kitchen note</span><textarea id="note" rows="2" maxlength="200" placeholder="e.g. no onion, sauce on the side"></textarea></label>
+    </div>
+    <div class="sheet__foot">
+      <div class="stepper" role="group" aria-label="Quantity"><button type="button" id="qMinus" aria-label="One fewer">${icon('minus')}</button><output id="qVal" aria-live="polite">1</output><button type="button" id="qPlus" aria-label="One more">${icon('plus')}</button></div>
+      <button type="button" class="btn lg block" id="addBtn"></button>
+    </div>`;
+  const dlg = $('#itemDlg');
+  const unit = () => $$('#itemBody input:checked').reduce((s, e) => s + Number(e.dataset.delta || 0), i.price);
+  const upd = () => { $('#qVal').textContent = qty; $('#addBtn').innerHTML = `Add to basket<span style="opacity:.6">·</span>${fmt(unit() * qty)}`; };
+  $('#qMinus').onclick = () => { qty = Math.max(1, qty - 1); upd(); };
+  $('#qPlus').onclick = () => { qty = Math.min(20, qty + 1); upd(); };
+  $('#itemBody').onchange = (e) => { e.target.closest('fieldset')?.classList.remove('invalid'); upd(); };
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  $('#addBtn').onclick = () => {
+    const mods = [];
+    for (const g of i.modifierGroups || []) {
+      const picked = $$(`#itemBody input[name="g-${g.id}"]:checked`).map(e => e.value);
+      if (g.required && picked.length !== 1) {
+        const fs = $(`#itemBody fieldset[data-g="${g.id}"]`); fs.classList.remove('invalid'); void fs.offsetWidth; fs.classList.add('invalid');
+        $('.badge', fs).textContent = 'Please choose one'; fs.scrollIntoView({ block: 'center', behavior: 'smooth' }); return;
+      }
+      mods.push(...picked);
+    }
+    cart.push({ menuItemId: id, modifiers: mods, note: $('#note').value.trim(), qty });
+    idemKey = null; saveCart(); dlg.close(); renderCart();
+  };
+  upd(); dlg.showModal();
+  dlg.scrollTop = 0;
+};
+const saveCart = () => { try { localStorage.setItem(cartKey, JSON.stringify(cart)); } catch {} };
+function renderCart() {
+  const n = cart.reduce((s, c) => s + c.qty, 0);
+  $('#cartbar').hidden = !n;
+  $('#cartCount').textContent = n;
+  $('#cartSummary').textContent = n ? `${n} item${n > 1 ? 's' : ''} in basket` : '';
+  $('#cartTotal').textContent = n ? 'Total shown at checkout' : '';
+  document.body.style.paddingBottom = n ? '0' : '';
+}
+
+/* ---------- checkout ---------- */
+async function openPay() {
+  const { ok, data } = await send('/api/orders/preview', 'POST', { items: cart });
+  if (!ok) {
+    if (data.soldOut) { cart = cart.filter(c => c.menuItemId !== data.soldOut); saveCart(); renderCart(); await loadMenu(); }
+    toast(esc(data.error || 'Could not price your basket') + (data.soldOut ? ' — we removed it from your basket.' : ' — please update your basket.'), 'err');
+    if ($('#payDlg').open) $('#payDlg').close(); return;
+  }
+  $('#payAlert').innerHTML = '';
+  $('#payBody').innerHTML = `<ul class="ledger">${data.items.map((it, n) => `<li><span>${it.qty} × ${esc(it.name)}
+      ${it.modifiers.length ? `<span class="sub">${it.modifiers.map(m => esc(m.name)).join(', ')}</span>` : ''}${it.note ? `<span class="sub">Note: ${esc(it.note)}</span>` : ''}
+      <button type="button" class="btn plain rm" data-rm="${n}">Remove</button></span><span class="amt">${fmt(it.lineTotal)}</span></li>`).join('')}
+    <li class="quiet"><span>Subtotal</span><span class="amt">${fmt(data.subtotal)}</span></li>
+    ${data.surcharges.map(s => `<li class="quiet"><span>${esc(s.name)}</span><span class="amt">${fmt(s.amount)}</span></li>`).join('')}
+    <li class="total"><span>Total</span><span class="amt">${fmt(data.total)}</span></li></ul>`;
+  $('#payNow').innerHTML = `${icon('card')}Pay ${fmt(data.total)}`;
+  if (!$('#payDlg').open) $('#payDlg').showModal();
+}
+$('#checkoutBtn').onclick = openPay;
+$('#payBody').addEventListener('click', e => {
+  const b = e.target.closest('[data-rm]'); if (!b) return;
+  cart.splice(Number(b.dataset.rm), 1); idemKey = null; saveCart(); renderCart();
+  if (!cart.length) $('#payDlg').close(); else openPay();
+});
+$('#payCancel').onclick = () => $('#payDlg').close();
+$('#card').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 19).replace(/(.{4})/g, '$1 ').trim(); });
+$$('[data-card]').forEach(b => b.onclick = () => { $('#card').value = b.dataset.card; });
+$('#payNow').onclick = async () => {
+  if (!idemKey) idemKey = 'guest-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const btn = $('#payNow'); btn.disabled = true; const label = btn.innerHTML; btn.textContent = 'Processing…';
+  const { ok, data } = await send('/api/orders', 'POST', { tableId, items: cart, idempotencyKey: idemKey, payment: { cardNumber: $('#card').value } });
+  btn.disabled = false; btn.innerHTML = label;
+  if (!ok) { $('#payAlert').innerHTML = `<div class="inline-err" role="alert">${icon('alert')}<span>${esc(data.error || 'Payment failed')}</span></div>`; idemKey = null; return; }
+  cart = []; saveCart(); renderCart(); $('#payDlg').close();
+  toast(`<strong>Order ${esc(data.order.id)} confirmed</strong><br>${esc(data.order.tableLabel)} · ${fmt(data.order.total)} · demo card •••• ${esc(data.order.payment.last4)}. The kitchen has it — follow along below, and order more any time.`, 'ok');
+  await loadOrders(); $('#myOrders').scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+
+/* ---------- orders & bill ---------- */
+const paidOrders = async () => { const { data } = await UI.api('/api/orders?table=' + encodeURIComponent(tableId)); return (data.orders || []).filter(o => o.payment.state === 'paid-demo'); };
+function orderCard(o) {
+  const idx = STEPS.indexOf(o.status);
+  const cancelled = o.status === 'Cancelled';
+  return `<article class="order"><div class="order__head"><span class="order__id">${esc(o.id)}</span><span class="badge ${esc(o.status)}">${esc(o.status)}</span><span class="spacer"></span><strong class="num">${fmt(o.total)}</strong></div>
+    <p class="order__items">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join(' · ')} · ${new Date(o.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+    ${cancelled ? `<div class="cancelled">${icon('alert')}<span>The kitchen couldn’t make this order. Please call staff — they’ll sort it out with you.</span></div>`
+      : `<ol class="track ${o.status === 'Ready' ? 'ready' : ''}" aria-label="Order progress: ${esc(o.status)}">${STEPS.map((s, n) => `<li class="${n < idx ? 'done' : n === idx ? 'done now' : ''}">${s}</li>`).join('')}</ol>`}</article>`;
+}
+async function loadOrders() {
+  if (!tableId) return;
+  const paid = await paidOrders();
+  for (const o of paid) {
+    if (seenStatus[o.id] && seenStatus[o.id] !== o.status && o.status === 'Ready') toast(`<strong>Order ${esc(o.id)} is ready</strong><br>It’s on its way to your table.`, 'ok');
+    seenStatus[o.id] = o.status;
+  }
+  $('#myOrders').innerHTML = paid.length ? `<h2>Your orders at this table</h2>` + paid.slice().reverse().map(orderCard).join('') : '';
+}
+$('#viewBill').onclick = async () => {
+  const paid = (await paidOrders()).filter(o => o.status !== 'Cancelled');
+  const total = paid.reduce((s, o) => s + o.total, 0);
+  $('#billBody').innerHTML = paid.length
+    ? `<ul class="ledger">${paid.map(o => `<li><span><strong>${esc(o.id)}</strong> <span class="badge ${esc(o.status)}" style="margin-left:6px">${esc(o.status)}</span><span class="sub">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join(', ')}</span></span><span class="amt">${fmt(o.total)}</span></li>`).join('')}
+       <li class="total"><span>Bill total</span><span class="amt">${fmt(total)}</span></li></ul>
+       <p class="muted" style="margin-top:12px">Demo bill. In production this is where pay-and-leave or split bill would complete.</p>`
+    : '<p class="muted" style="margin-top:12px">No paid orders yet at this table.</p>';
+  $('#billDlg').showModal();
+};
+$('#billClose').onclick = () => $('#billDlg').close();
+$('#callStaff').onclick = async () => {
+  const { ok } = await send('/api/assist', 'POST', { tableId });
+  toast(ok ? '<strong>Staff are on their way</strong><br>Someone will come to your table shortly.' : 'Could not notify staff — please flag down a team member.', ok ? 'ok' : 'err');
+};
+setInterval(loadOrders, 5000);
+load();
+</script>
+</body>
+</html>
