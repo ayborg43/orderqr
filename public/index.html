@@ -3,83 +3,279 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#1f3fa6">
-<title>The Corner Table — QR Ordering Demo</title>
+<meta name="theme-color" content="#0e3727">
+<meta name="description" content="The Corner Table — QR ordering for restaurants. Guests scan, order and pay from their phones. Orders land straight on the kitchen display. No app download.">
+<title>The Corner Table — QR Code Ordering for Restaurants</title>
 <link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/app.css">
 </head>
-<body>
-<header class="hero">
-  <div class="hero__in">
-    <div class="hero__bar"><span class="hero__brand">The Corner Table</span><span class="badge plain">Demo payments only</span></div>
-    <div class="hero__grid">
-      <div>
-        <h1>Order from the table. <em>Watch it land</em> in the kitchen.</h1>
-        <p class="hero__lead">Guests scan the code on their table, order and pay from their phone. The ticket reaches the kitchen the moment the payment clears, and staff run the rest from one screen.</p>
-        <div class="hero__cta">
-          <a class="btn yolk lg" id="ctaGuest" href="/guest?table=5">Order as a guest</a>
-          <a class="btn ghost lg" href="/kitchen">Open the kitchen</a>
-        </div>
-      </div>
-      <div class="scan" id="scan">
-        <div class="plaque sm"><span class="plaque__label">Table</span><span class="plaque__num" id="scanNum">5</span></div>
-        <div class="scan__tag"><img id="scanQr" src="/qr?table=5" alt="QR code that opens the guest menu for this table" width="230" height="230"><p>This is the code on the table. Scan it with a phone on the same network, or use the button.</p></div>
-      </div>
+<body class="home">
+<div id="alert"></div>
+
+<!-- ===================== NAV ===================== -->
+<header class="n-nav">
+  <div class="n-nav__in">
+    <a class="n-logo" href="/" aria-label="The Corner Table — home">
+      <span class="n-logo__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg></span>
+      <span>The Corner Table<small>QR ordering for restaurants</small></span>
+    </a>
+    <nav class="n-links" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#sync">Guest · Kitchen · Admin</a>
+      <a href="#demo">Live demo</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="n-nav__cta">
+      <a class="n-link-quiet" href="/kitchen">Kitchen</a>
+      <a class="n-link-quiet" href="/admin">Admin</a>
+      <a class="n-btn n-btn--dark" href="/guest?table=5">Order as a guest</a>
     </div>
   </div>
 </header>
 
-<main class="wrap" style="padding-top:8px">
-  <section class="l-sec" style="margin-top:36px">
-    <h2>Pick a table</h2>
-    <p>This is what scanning a table’s QR code opens. Every table sees its own orders and its own bill.</p>
-    <div class="plaques" id="tables"></div>
-  </section>
-
-  <section class="l-sec">
-    <h2>Three screens, one order</h2>
-    <div class="doors">
-      <a class="door" href="/guest?table=5"><span class="door__who">Diner · phone</span><span class="door__text"><span class="door__name">Guest ordering</span><span class="door__what">Browse by category, customise, pay, and follow the order from received to served.</span></span><span id="d1"></span></a>
-      <a class="door" href="/kitchen"><span class="door__who">Kitchen · tablet or monitor</span><span class="door__text"><span class="door__name">Kitchen display</span><span class="door__what">Live tickets split by station, with how long each order has been waiting.</span></span><span id="d2"></span></a>
-      <a class="door" href="/admin"><span class="door__who">Manager · front of house</span><span class="door__text"><span class="door__name">Admin dashboard</span><span class="door__what">Orders, sold-out switches, printable table cards and surcharges.</span></span><span id="d3"></span></a>
+<!-- ===================== HERO ===================== -->
+<section class="n-hero">
+  <div class="n-hero__in">
+    <div class="n-hero__copy">
+      <span class="n-pill"><i></i> Live demo — demo payments only</span>
+      <h1>Cut the wait,<br>not the <mark>service.</mark></h1>
+      <p class="n-lead">QR digital ordering for restaurants. Let guests browse, order, and pay right from their phones. Orders go straight to the kitchen display — no downloads, no delays, just faster, smarter service.</p>
+      <div class="n-cta">
+        <a class="n-btn n-btn--green lg" href="/guest?table=5">Order as a guest — Table 5 <span data-ic="arrow"></span></a>
+        <a class="n-btn n-btn--outline lg" href="/kitchen">Open the kitchen</a>
+      </div>
+      <ul class="n-checks">
+        <li><span data-ic="checkCircle"></span> Improve table turnover</li>
+        <li><span data-ic="checkCircle"></span> Increase your average spend</li>
+        <li><span data-ic="checkCircle"></span> No app download required</li>
+        <li><span data-ic="checkCircle"></span> Kitchen display included</li>
+        <li><span data-ic="checkCircle"></span> Surcharges handled for you</li>
+      </ul>
     </div>
-  </section>
 
-  <section class="l-sec">
-    <h2>Run the demo</h2>
-    <ol class="script">
+    <div class="n-hero__visual" aria-label="Preview: a guest scans the table QR code and orders from their phone">
+      <div class="n-phone">
+        <div class="n-phone__bar"><span>9:41</span><span class="n-phone__notch"></span><span>5G</span></div>
+        <div class="n-phone__head">
+          <b>The Corner Table</b><span class="n-phone__table">Table 5</span>
+        </div>
+        <p class="n-phone__hi">Scan to order — browse the menu, customise, pay. Done.</p>
+        <div class="n-phone__dish"><span class="n-dot d-grill"></span><span><b>Smash Burger</b><small>Medium · extra cheese</small></span><b>₦18.00</b></div>
+        <div class="n-phone__dish"><span class="n-dot d-drinks"></span><span><b>Fresh Lemonade</b><small>Large</small></span><b>₦6.50</b></div>
+        <div class="n-phone__dish"><span class="n-dot d-dessert"></span><span><b>Chocolate Fondant</b><small>Vanilla bean ice cream</small></span><b>₦9.50</b></div>
+        <div class="n-phone__track" id="phoneTrack">
+          <span class="on">Scan to order</span><span>Order placed</span><span>Preparing</span><span>Ready</span>
+        </div>
+        <a class="n-phone__pay" href="/guest?table=5">Pay ₦34.00</a>
+      </div>
+      <div class="n-qr-card">
+        <div class="plaque sm"><span class="plaque__label">Table</span><span class="plaque__num" id="scanNum">5</span></div>
+        <img id="scanQr" src="/qr?table=5" alt="QR code that opens the guest menu for Table 5" width="150" height="150">
+        <p>Scan me with a phone on the same network — or tap Order as a guest.</p>
+      </div>
+      <div class="n-float-card"><span data-ic="checkCircle"></span><span><b>Order #1042 — Ready</b><small>Table 5 · Grill + Drinks · just now</small></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== HOW IT WORKS ===================== -->
+<section class="n-sec" id="how">
+  <div class="n-in">
+    <p class="n-kicker">How it works</p>
+    <h2>Simplify dining: how QR codes work for restaurants</h2>
+    <div class="n-steps">
+      <article class="n-step">
+        <span class="n-step__num">1</span><span class="n-step__ic c-green" data-ic="qr"></span>
+        <h3>You choose</h3>
+        <p>Customers simply scan the QR code at the table with their phone, browse the menu, customise their order, and hit “submit.” Done!</p>
+        <a href="/guest?table=5">Try the guest menu <span data-ic="arrow"></span></a>
+      </article>
+      <article class="n-step">
+        <span class="n-step__num">2</span><span class="n-step__ic c-pink" data-ic="card"></span>
+        <h3>Instant order &amp; payment</h3>
+        <p>The order goes straight to the kitchen display, split by station. Guests pay right then and there — quick, secure, and hassle-free.</p>
+        <a href="/kitchen">See the kitchen display <span data-ic="arrow"></span></a>
+      </article>
+      <article class="n-step">
+        <span class="n-step__num">3</span><span class="n-step__ic c-yellow" data-ic="receipt"></span>
+        <h3>Reorder or wrap it up</h3>
+        <p>Want more? Just scan again and add to the tab. Ready to go? Check the bill through the QR code, pay, and leave without waiting. Simple, seamless, contactless.</p>
+        <a href="/guest?table=5">View a table bill <span data-ic="arrow"></span></a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FEATURES ===================== -->
+<section class="n-sec n-sec--white" id="features">
+  <div class="n-in">
+    <p class="n-kicker">Features</p>
+    <h2>The future of dining, at your fingertips</h2>
+    <p class="n-sub">Everything a guest, a kitchen, and a manager need — in the browser they already have.</p>
+    <div class="n-feats">
+      <article class="n-feat"><span class="n-feat__ic c-green" data-ic="phone"></span><h3>No app? No problem!</h3><p>Customers place and reorder without ever standing in line. Perfect for groups and families — everyone can order and pay for their own meals, hassle-free.</p></article>
+      <article class="n-feat"><span class="n-feat__ic c-pink" data-ic="menu"></span><h3>Smart menus</h3><p>Menus grouped by category with descriptions and live availability. Sold-out items stay visible — but can’t be ordered.</p></article>
+      <article class="n-feat"><span class="n-feat__ic c-teal" data-ic="search"></span><h3>Quick filters</h3><p>Let customers search by Vegan, Vegetarian, Gluten-Free, or Spicy in a snap — plus full-text search across the whole menu.</p></article>
+      <article class="n-feat"><span class="n-feat__ic c-yellow" data-ic="sliders"></span><h3>Easy setup</h3><p>Cloud-based and super simple. Print a card per table and you’re live — no infrastructure or tech changes required.</p></article>
+      <article class="n-feat"><span class="n-feat__ic c-green" data-ic="card"></span><h3>Surcharges made simple</h3><p>Automatically apply fees for card payments, public holidays, and more — itemised on every bill, effortlessly.</p></article>
+      <article class="n-feat"><span class="n-feat__ic c-pink" data-ic="checkCircle"></span><h3>Pay in one go</h3><p>Customers pay securely at the table and follow their order from Received to Served. No waiting to flag down a server.</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== SYNC / THREE SCREENS ===================== -->
+<section class="n-sec" id="sync">
+  <div class="n-in">
+    <p class="n-kicker">Seamless sync</p>
+    <h2>QR codes meet kitchen, counter &amp; back office</h2>
+    <p class="n-sub">Three screens, one order. Open each one and watch a single ticket flow through all of them.</p>
+    <div class="n-sync">
+      <a class="n-sync-card dark" href="/guest?table=5">
+        <span class="n-sync-card__tag">For diners · phone</span>
+        <h3>Guest ordering</h3>
+        <p>Browse by category, customise with modifiers, pay, and follow the order from received to served. Reorder any time, check the table bill when you’re done.</p>
+        <span class="n-sync-card__go">Open guest menu <span data-ic="arrow"></span></span>
+      </a>
+      <a class="n-sync-card green" href="/kitchen">
+        <span class="n-sync-card__tag">For the kitchen · tablet or monitor</span>
+        <h3>Kitchen display</h3>
+        <p>Live tickets split by station — Grill, Kitchen, Drinks, Dessert — with how long each order has been waiting. Advance status and the guest sees it instantly.</p>
+        <span class="n-sync-card__go">Open kitchen display <span data-ic="arrow"></span></span>
+      </a>
+      <a class="n-sync-card yellow" href="/admin">
+        <span class="n-sync-card__tag">For managers · front of house</span>
+        <h3>Admin dashboard</h3>
+        <p>Every order, sold-out switches, printable table cards with QR codes, assistance requests, and surcharge settings — all in one quiet, scannable screen.</p>
+        <span class="n-sync-card__go">Open admin <span data-ic="arrow"></span></span>
+      </a>
+    </div>
+
+    <div class="n-together">
+      <div class="n-together__head"><h3>Better together.</h3><p>Deep, native connections between ordering, kitchen, and payments — orders and data flow like never before.</p></div>
+      <a class="n-together__row" href="/guest?table=5"><span><b>Guest ordering</b><small>Table ordering &amp; reordering</small></span><span>Seamlessly connected table ordering — turn on a new table in seconds.</span><span data-ic="arrow"></span></a>
+      <a class="n-together__row" href="/kitchen"><span><b>Kitchen display</b><small>Station-routed tickets</small></span><span>Every paid order lands on the right station the moment payment clears.</span><span data-ic="arrow"></span></a>
+      <a class="n-together__row" href="/admin"><span><b>Back office</b><small>Menu, tables &amp; surcharges</small></span><span>Toggle sold-out, print table cards, and set surcharges — guests see changes immediately.</span><span data-ic="arrow"></span></a>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== TESTIMONIALS + STATS ===================== -->
+<section class="n-sec n-sec--white">
+  <div class="n-in">
+    <p class="n-kicker">What operators say</p>
+    <h2>Loved on the floor, not just on paper</h2>
+    <div class="n-quotes">
+      <figure class="n-quote"><blockquote>“Tickets hit the pass the second a guest pays. No more lost dockets, no more shouting across the kitchen.”</blockquote><figcaption><b>Kitchen lead</b><span>Grill station, demo venue</span></figcaption></figure>
+      <figure class="n-quote"><blockquote>“Guests reorder dessert without flagging anyone down. Average spend per table is visibly up on Friday nights.”</blockquote><figcaption><b>Floor manager</b><span>Front of house, demo venue</span></figcaption></figure>
+      <figure class="n-quote"><blockquote>“Marking a dish sold-out takes one tap, and it’s gone from every phone at every table. That alone saves us nightly.”</blockquote><figcaption><b>Venue manager</b><span>The Corner Table, demo venue</span></figcaption></figure>
+    </div>
+    <div class="n-stats">
+      <div class="n-stat"><b>12</b><span>Tables ready to scan — every table sees its own orders and its own bill</span></div>
+      <div class="n-stat"><b>3</b><span>Screens, one order — guest, kitchen, and admin, always in sync</span></div>
+      <div class="n-stat"><b>0</b><span>App downloads — guests order from the browser they already have</span></div>
+      <div class="n-stat"><b>Live</b><span>Tickets reach the kitchen the moment payment clears, via live updates</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== LIVE DEMO ===================== -->
+<section class="n-sec n-demo" id="demo">
+  <div class="n-in">
+    <p class="n-kicker light">Live demo</p>
+    <h2>Skip the sales call. Try a table.</h2>
+    <p class="n-sub light">This page is a working venue, not a slideshow. Pick a table, place an order, and watch it land in the kitchen.</p>
+
+    <h3 class="n-demo__h">1 · Pick a table</h3>
+    <p class="n-demo__p">This is what scanning a table’s QR code opens. Every table sees its own orders and its own bill.</p>
+    <div class="plaques" id="tables"></div>
+
+    <h3 class="n-demo__h">2 · Run the demo</h3>
+    <ol class="script n-script">
       <li>Open <a href="/guest?table=5">Table 5</a> as a guest. Add a <b>Smash Burger</b> with a cooking preference, extra cheese and the note “no onion”, then a lemonade.</li>
-      <li>Check out with the approving card. Note the order number and the itemised surcharges.</li>
+      <li>Check out with the approving card below. Note the order number and the itemised surcharges.</li>
       <li>Open the <a href="/kitchen">kitchen display</a>. The burger shows under Grill and the lemonade under Drinks. Advance the order to Ready, then Served.</li>
       <li>Back as the guest, watch the status change, order a dessert, then open the table’s bill.</li>
       <li>In <a href="/admin">admin</a>, switch a drink off and try to order it. Then try the declining card, and a double-tap on Pay.</li>
     </ol>
-  </section>
 
-  <section class="l-sec">
-    <h2>Test cards</h2>
-    <p>No real money moves. Pick one at checkout, or copy a number.</p>
+    <h3 class="n-demo__h">3 · Test cards</h3>
+    <p class="n-demo__p">No real money moves. Pick one at checkout, or copy a number.</p>
     <div class="testcards">
       <div class="tc"><div class="tc__label"><span>Approves</span><span>Demo</span></div><div class="tc__num">4242 4242 4242 4242</div><div class="tc__foot"><span>Order goes to the kitchen</span><button class="btn" type="button" data-copy="4242 4242 4242 4242"></button></div></div>
       <div class="tc no"><div class="tc__label"><span>Declines</span><span>Demo</span></div><div class="tc__num">4000 0000 0000 0002</div><div class="tc__foot"><span>No ticket is created</span><button class="btn" type="button" data-copy="4000 0000 0000 0002"></button></div></div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <footer class="l-foot"><span>Demo only. Data is saved to <code>data/store.json</code>.</span><a href="/guest?table=999">Try an invalid table</a></footer>
-</main>
+<!-- ===================== FAQ ===================== -->
+<section class="n-sec n-sec--white" id="faq">
+  <div class="n-in n-in--narrow">
+    <p class="n-kicker">Got a question?</p>
+    <h2>Frequently asked questions</h2>
+    <div class="n-faq">
+      <details><summary>What are the benefits of QR ordering?<span data-ic="plus"></span></summary><p>Guests order and pay at their own pace, tables turn faster, and staff spend time on service instead of running orders back and forth. Every paid order reaches the kitchen instantly, with modifiers and notes attached.</p></details>
+      <details><summary>Will I need to build an app for QR ordering?<span data-ic="plus"></span></summary><p>No. Guests scan the table code and order in their phone browser — no download, no account, no login. It works for groups and families where everyone orders for themselves.</p></details>
+      <details><summary>Does QR ordering reduce labour costs?<span data-ic="plus"></span></summary><p>It reduces the trips, not the team. Fewer order-taking and payment runs means the same staff can look after more tables, and guests never wait just to ask for the bill.</p></details>
+      <details><summary>Can you help with QR codes and in-venue promotion?<span data-ic="plus"></span></summary><p>Yes — the admin dashboard generates a printable table card with a QR code for every table. Print them, stand them on tables, and you’re live.</p></details>
+      <details><summary>Does QR ordering improve accuracy, or cause more mistakes?<span data-ic="plus"></span></summary><p>Guests type their own modifiers and kitchen notes, availability is re-checked by the server at checkout, and double-taps can’t create duplicate orders. Fewer hand-offs, fewer mistakes.</p></details>
+      <details><summary>How does this help with surcharges and bills?<span data-ic="plus"></span></summary><p>Card and public-holiday surcharges are set once in admin and itemised automatically on every bill. A table’s full bill — every order and the total — is always one tap away for guests.</p></details>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== CTA ===================== -->
+<section class="n-cta-band">
+  <div class="n-in">
+    <h2>Ready to go digital?</h2>
+    <p>Every demo here is run on the real thing — same menu, same kitchen, same bill your guests would see. Start at Table 5.</p>
+    <ul class="n-cta-points"><li><span data-ic="checkCircle"></span> 2-minute self-guided demo</li><li><span data-ic="checkCircle"></span> Guest, kitchen &amp; admin included</li><li><span data-ic="checkCircle"></span> Real order flow, demo payments</li><li><span data-ic="checkCircle"></span> No sign-up, no commitment</li></ul>
+    <div class="n-cta">
+      <a class="n-btn n-btn--green lg" href="/guest?table=5">Order as a guest <span data-ic="arrow"></span></a>
+      <a class="n-btn n-btn--ghostlight lg" href="/kitchen">Open the kitchen</a>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FOOTER ===================== -->
+<footer class="n-foot">
+  <div class="n-in">
+    <div class="n-foot__top">
+      <div class="n-foot__brand">
+        <a class="n-logo light" href="/"><span class="n-logo__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg></span><span>The Corner Table<small>QR ordering for restaurants</small></span></a>
+        <p>The all-in-one ordering platform built for hospitality — guest ordering, kitchen display, and admin in a single demo venue.</p>
+        <span class="badge plain">Demo only · Data saved to <code>data/store.json</code></span>
+      </div>
+      <nav class="n-foot__col" aria-label="Order"><h4>Order</h4><a href="/guest?table=5">Guest menu — Table 5</a><a href="#demo">Pick a table</a><a href="#demo">Test cards</a><a href="/guest?table=999">Try an invalid table</a></nav>
+      <nav class="n-foot__col" aria-label="Operate"><h4>Operate</h4><a href="/kitchen">Kitchen display</a><a href="/admin">Admin dashboard</a><a href="/admin#tables">Table cards</a><a href="/admin#settings">Surcharges</a></nav>
+      <nav class="n-foot__col" aria-label="Explore"><h4>Explore</h4><a href="#how">How it works</a><a href="#features">Features</a><a href="#sync">Guest · Kitchen · Admin</a><a href="#faq">FAQ</a></nav>
+    </div>
+    <div class="n-foot__base"><span>© The Corner Table — QR ordering demo.</span><span>Demo payments only. No real money moves.</span></div>
+  </div>
+</footer>
+
 <script src="/ui.js"></script>
 <script>
 const { $, $$, icon, esc } = UI;
-['d1', 'd2', 'd3'].forEach(id => $('#' + id).innerHTML = icon('arrow'));
+// Fill icon placeholders with the shared icon set.
+$$('[data-ic]').forEach(el => { el.innerHTML = icon(el.dataset.ic); });
+// Rotating phone tracker: Scan -> Placed -> Preparing -> Ready.
+(() => {
+  const steps = $$('#phoneTrack span'); let i = 0;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { steps.forEach(s => s.classList.add('on')); return; }
+  setInterval(() => { i = (i + 1) % steps.length; steps.forEach((s, j) => s.classList.toggle('on', j <= i)); }, 2200);
+})();
+// Copy buttons on test cards.
 $$('[data-copy]').forEach(b => { b.innerHTML = icon('copy') + 'Copy'; b.onclick = async () => {
-  try { await navigator.clipboard.writeText(b.dataset.copy); b.innerHTML = icon('check') + 'Copied'; } catch { b.innerHTML = 'Select &amp; copy'; }
+  try { await navigator.clipboard.writeText(b.dataset.copy); b.innerHTML = icon('check') + 'Copied'; } catch { b.innerHTML = 'Select & copy'; }
   setTimeout(() => { b.innerHTML = icon('copy') + 'Copy'; }, 1800); }; });
+// Live table plaques.
 fetch('/api/tables').then(r => r.json()).then(({ tables }) => {
   $('#tables').innerHTML = tables.map(t => {
     const m = String(t.label).match(/^(.*\S)\s+(\S+)$/);
     return `<a class="plaque sm" href="/guest?table=${encodeURIComponent(t.id)}" aria-label="Open ${esc(t.label)}"><span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : t.label)}</span></a>`;
   }).join('');
-});
+}).catch(() => { $('#tables').innerHTML = '<p class="n-demo__p">Tables unavailable — is the server running?</p>'; });
 </script>
 </body>
 </html>

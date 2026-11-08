@@ -21,6 +21,10 @@
     note: '<path d="M4 4h16v12l-5 5H4z"/><path d="M15 21v-5h5"/>',
     home: '<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/>',
     gf: '<path d="M12 21V8"/><path d="M12 8c-2-.5-3.5-2-3.5-4 2 .3 3.500 1.800 3.500 4Zm0 0c2-.5 3.500-2 3.500-4-2 .3-3.500 1.800-3.500 4Zm0 5c-2-.5-3.500-2-3.500-4 2 .3 3.500 1.800 3.500 4Zm0 0c2-.5 3.500-2 3.500-4-2 .3-3.500 1.800-3.500 4Z"/>',
+    qr: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM21 14v.01M14 21v.01M18 18h3v3h-3z"/>',
+    phone: '<rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18.5h2"/>',
+    menu: '<path d="M4 6h16M4 12h16M4 18h10"/>',
+    sliders: '<path d="M5 7h9M18 7h1M5 12h3M12 12h7M5 17h11M20 17h-1"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/>',
   };
   const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[n] || ''}</svg>`;
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
