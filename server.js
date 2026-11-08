@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
-const DATA_DIR = path.join(ROOT, "data");
+const DATA_DIR = process.env.VERCEL ? "/tmp/orderqr-data" : path.join(ROOT, "data");
 const STORE_FILE = path.join(DATA_DIR, "store.json");
 
 const seedMenu = [
@@ -53,11 +53,12 @@ async function loadStore() {
   store = seedStore();
   await saveStore();
 }
-let saveTimer = null;
+let saveChain = Promise.resolve();
 function saveStore() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => writeFile(STORE_FILE, JSON.stringify(store, null, 2)).catch(() => {}), 20);
-  return Promise.resolve();
+  // Serialized direct write: on serverless the process may freeze after the
+  // response, so a debounced write could be lost.
+  saveChain = saveChain.then(() => writeFile(STORE_FILE, JSON.stringify(store, null, 2))).catch(() => {});
+  return saveChain;
 }
 
 // --- live events (SSE) ---
@@ -208,10 +209,10 @@ async function serveStatic(req, res, url) {
 }
 
 await loadStore();
-http.createServer(async (req, res) => {
+export async function appHandler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
-    if (url.pathname === "/qr" ) {
+    if (url.pathname === "/qr" || url.pathname === "/api/qr") {
       // QR SVG for a table link, using optional `qrcode` package; falls back to text page.
       const target = `${url.origin}/guest?table=${encodeURIComponent(url.searchParams.get("table") || "")}`;
       try {
@@ -223,5 +224,12 @@ http.createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);
   } catch (e) { json(res, 500, { error: String(e?.message || e) }); }
-}).listen(PORT, () => console.log(`QR Restaurant running at http://localhost:${PORT}`));
+}
+export default appHandler;
+
+// Local run (`npm start`): long-lived server. On Vercel this file is imported
+// by api/[...path].js as a serverless function instead, so do not listen there.
+if (!process.env.VERCEL) {
+  http.createServer(appHandler).listen(PORT, () => console.log(`QR Restaurant running at http://localhost:${PORT}`));
+}
 
