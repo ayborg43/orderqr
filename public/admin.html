@@ -47,14 +47,16 @@
 <script>
 const { $, $$, esc, fmt, icon, glaze, send, api, ensureStaff, wireSignOut } = UI;
 const FILTERS = [['', 'All'], ['Received', 'Received'], ['Preparing', 'Preparing'], ['Ready', 'Ready'], ['Served', 'Served'], ['Cancelled', 'Cancelled'], ['PaymentFailed', 'Payment failed']];
-let status = '', allOrders = [], settingsDirty = false, tablesKey = '';
+let status = '', allOrders = [], settingsDirty = false, tablesKey = '', showAll = false;
+const LIMIT = 25, LABEL = { PaymentFailed: 'Payment failed' };
 $('#homeLink').innerHTML = icon('home') + 'Home'; $('#printBtn').innerHTML = icon('printer') + 'Print table cards';
 $('#printBtn').onclick = () => window.print();
 
 function renderOrders() {
   const count = (s) => allOrders.filter(o => !s || o.status === s).length;
   $('#statusFilter').innerHTML = FILTERS.filter(([s]) => !s || count(s) || s === status).map(([s, l]) => `<button class="chip" type="button" data-s="${s}" aria-pressed="${s === status}">${l}<span class="count">${count(s)}</span></button>`).join('');
-  const list = allOrders.filter(o => !status || o.status === status);
+  const full = allOrders.filter(o => !status || o.status === status);
+  const list = showAll ? full : full.slice(0, LIMIT);
   $('#ordersNote').textContent = allOrders.length ? `${count('Received') + count('Preparing')} in progress · ${count('Ready')} ready to serve · ${allOrders.length} in total` : 'Orders appear here as guests pay.';
   $('#ordersBox').innerHTML = list.length ? `<table class="dt"><thead><tr><th>Order</th><th>Table</th><th>Items</th><th class="num">Total</th><th>Payment</th><th>Status</th></tr></thead><tbody>
     ${list.map(o => `<tr><td data-label="Order"><span class="id">${esc(o.id)}</span><br><span class="muted">${new Date(o.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></td>
@@ -62,10 +64,11 @@ function renderOrders() {
       <td data-label="Items" class="items">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join('<br>')}</td>
       <td data-label="Total" class="num">${fmt(o.total)}</td>
       <td data-label="Payment">${o.payment.state === 'paid-demo' ? 'Demo paid •••• ' + esc(o.payment.last4) : '<span class="badge Cancelled">Declined</span>'}</td>
-      <td data-label="Status"><span class="badge ${esc(o.status)}">${esc(o.status)}</span></td></tr>`).join('')}</tbody></table>`
+      <td data-label="Status"><span class="badge ${esc(o.status)}">${esc(LABEL[o.status] || o.status)}</span></td></tr>`).join('')}</tbody></table>${full.length > list.length ? `<div class="more-orders"><button class="btn secondary" type="button" id="moreOrders">Show all ${full.length} orders</button></div>` : ''}`
     : `<div class="empty-row">${allOrders.length ? 'No orders with this status.' : 'No orders yet. Place one as a guest and it will show up here.'}</div>`;
 }
-$('#statusFilter').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; status = b.dataset.s; renderOrders(); });
+$('#statusFilter').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; status = b.dataset.s; showAll = false; renderOrders(); });
+$('#ordersBox').addEventListener('click', e => { if (e.target.closest('#moreOrders')) { showAll = true; renderOrders(); } });
 
 function renderMenu(m) {
   const cats = [...new Set(m.items.map(i => i.category))];

@@ -30,6 +30,7 @@ let station = '', orders = [], seen = null;
 $('#homeLink').innerHTML = icon('home') + 'Home';
 
 function minsAgo(iso) { return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000)); }
+function ago(m) { return m < 60 ? m + ' min' : m < 1440 ? Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm' : Math.floor(m / 1440) + 'd+'; }
 async function load() {
   const { status, data: d } = await api('/api/orders');
   if (status === 401) return location.reload();
@@ -54,7 +55,7 @@ function ticket(o) {
   const items = o.items.filter(i => !station || i.station === station);
   return `<article class="ticket ${esc(o.status)} ${seen && !seen.has(o.id) ? 'fresh' : ''}" data-id="${esc(o.id)}">
     <div class="ticket__head"><span class="ticket__table">${esc(o.tableLabel)}</span><span class="ticket__id">${esc(o.id)}</span>
-      <span class="ticket__age ${age >= 12 ? 'late' : ''}" title="Time since order">${icon('clock')}${age} min</span></div>
+      <span class="ticket__age ${age >= 12 ? 'late' : ''}" title="Time since order">${icon('clock')}${ago(age)}</span></div>
     <div class="ticket__status"><span class="badge ${esc(o.status)}">${esc(o.status)}</span><span>${new Date(o.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${fmt(o.total)}</span></div>
     <div class="ticket__items">${items.map(i => `<div class="t-item"><span class="t-item__qty">${i.qty}×</span>
       <span class="t-item__name">${esc(i.name)}<span class="tag">${esc(i.station)}</span></span>
