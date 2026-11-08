@@ -1,12 +1,12 @@
 {
   "name": "qr-restaurant-ordering",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "QR table ordering MVP for one restaurant — guest ordering, demo payment, kitchen display, admin.",
+  "description": "OrderQR: multi-restaurant QR table ordering. Each restaurant gets its own menu, tables, staff logins, kitchen display and admin. Demo payments only.",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/smoke.test.mjs tests/auth.test.mjs tests/qr.test.mjs"
+    "test": "node --test tests/smoke.test.mjs tests/auth.test.mjs tests/qr.test.mjs tests/tenants.test.mjs"
   },
   "engines": { "node": ">=20" },
   "optionalDependencies": { "qrcode": "^1.5.4" }

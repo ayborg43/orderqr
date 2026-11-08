@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#0e3727">
-<title>Admin — The Corner Table</title>
+<title>Admin</title>
 <link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <header class="a-head">
   <div class="a-head__in">
-    <div class="a-brand">The Corner Table<small>Front of house</small></div>
+    <div class="a-brand"><span id="restName"></span><small>Front of house</small></div>
     <nav class="a-nav" aria-label="Sections"><a href="#orders">Orders</a><a href="#menu">Menu</a><a href="#tables">Tables &amp; QR</a><a href="#settings">Surcharges</a></nav>
     <span class="staff-user" id="staffUser"></span>
     <button class="btn small ghost" type="button" id="signOut" hidden>Sign out</button>
@@ -28,13 +28,14 @@
   </section>
 
   <section class="a-sec" id="menu">
-    <div class="a-sec__head"><div><h2>Menu availability</h2><p class="muted">Switch a dish off and guests can no longer add it, straight away. Switch it back on when it’s restocked.</p></div></div>
+    <div class="a-sec__head"><div><h2>Menu</h2><p class="muted">Switch a dish off and guests can no longer add it, straight away. Edit prices and descriptions, or add new dishes.</p></div>
+      <button class="btn secondary" type="button" id="addDish"></button></div>
     <div class="avail-cols" id="menuAdmin"></div>
   </section>
 
   <section class="a-sec" id="tables">
     <div class="a-sec__head"><div><h2>Tables &amp; QR codes</h2><p class="muted">Each QR opens the guest menu for that table only. Print the cards and place one on every table.</p></div>
-      <button class="btn secondary" type="button" id="printBtn"></button></div>
+      <div class="row" style="gap:10px"><button class="btn secondary" type="button" id="addTable"></button><button class="btn secondary" type="button" id="printBtn"></button></div></div>
     <div class="tcards" id="tablesBox"></div>
   </section>
 
@@ -43,13 +44,39 @@
     <div class="panel pad" id="settingsBox"></div>
   </section>
 </main>
+<dialog class="sheet" id="dishDlg" aria-labelledby="dishTitle">
+  <div class="sheet__strip glaze glaze-mains"></div>
+  <button type="button" class="sheet__close" aria-label="Close" data-close id="dishX"></button>
+  <form id="dishForm" novalidate>
+    <div class="sheet__body">
+      <h3 class="sheet__title" id="dishTitle">Add a dish</h3>
+      <div class="formgrid">
+        <label class="field span2"><span>Name</span><input type="text" id="dName" maxlength="80" required></label>
+        <label class="field span2"><span>Description</span><textarea id="dDesc" maxlength="200" rows="2"></textarea></label>
+        <label class="field"><span>Price (₦)</span><input type="text" id="dPrice" inputmode="decimal" required></label>
+        <label class="field"><span>Category</span><input type="text" id="dCat" list="catList" maxlength="30" required placeholder="e.g. Mains"><datalist id="catList"></datalist></label>
+        <label class="field span2"><span>Kitchen station</span><select id="dStation"></select></label>
+        <fieldset class="field span2 diet"><legend>Dietary labels</legend><div class="row" id="dDiet"></div></fieldset>
+      </div>
+      <p class="inline-err" id="dishErr" role="alert" hidden></p>
+    </div>
+    <div class="sheet__foot">
+      <button class="btn danger plainish" type="button" id="dishDelete" hidden>Delete</button>
+      <button class="btn secondary" type="button" id="dishCancel">Cancel</button>
+      <button class="btn block" type="submit" id="dishSave">Save dish</button>
+    </div>
+  </form>
+</dialog>
 <script src="/ui.js"></script>
 <script>
 const { $, $$, esc, fmt, icon, glaze, send, api, ensureStaff, wireSignOut } = UI;
 const FILTERS = [['', 'All'], ['Received', 'Received'], ['Preparing', 'Preparing'], ['Ready', 'Ready'], ['Served', 'Served'], ['Cancelled', 'Cancelled'], ['PaymentFailed', 'Payment failed']];
 let status = '', allOrders = [], settingsDirty = false, tablesKey = '', showAll = false;
 const LIMIT = 25, LABEL = { PaymentFailed: 'Payment failed' };
-$('#homeLink').innerHTML = icon('home') + 'Home'; $('#printBtn').innerHTML = icon('printer') + 'Print table cards';
+let menuItems = [];
+const STATIONS = ['Grill', 'Kitchen', 'Drinks', 'Dessert'], DIET = [['vegan', 'Vegan'], ['vegetarian', 'Vegetarian'], ['gluten-free', 'Gluten-free'], ['spicy', 'Spicy']];
+UI.info.then(r => { $('#restName').textContent = r.name; document.title = 'Admin — ' + r.name; });
+$('#homeLink').innerHTML = icon('home') + 'Overview'; $('#homeLink').href = '/r/' + UI.rid; $('#printBtn').innerHTML = icon('printer') + 'Print table cards'; $('#addDish').innerHTML = icon('plus') + 'Add dish'; $('#addTable').innerHTML = icon('plus') + 'Add table';
 $('#printBtn').onclick = () => window.print();
 
 function renderOrders() {
@@ -71,9 +98,11 @@ $('#statusFilter').addEventListener('click', e => { const b = e.target.closest('
 $('#ordersBox').addEventListener('click', e => { if (e.target.closest('#moreOrders')) { showAll = true; renderOrders(); } });
 
 function renderMenu(m) {
+  menuItems = m.items;
   const cats = [...new Set(m.items.map(i => i.category))];
   $('#menuAdmin').innerHTML = cats.map(cat => `<div class="panel avail-group"><h3><i class="${glaze(cat)}"></i>${esc(cat)}</h3>
     ${m.items.filter(i => i.category === cat).map(i => `<div class="avail-row ${i.available ? '' : 'off'}"><div><b>${esc(i.name)}</b><span class="muted">${fmt(i.price)} · ${esc(i.station)}</span></div>
+      <button class="btn small plain edit" type="button" data-edit="${esc(i.id)}" aria-label="Edit ${esc(i.name)}">Edit</button>
       <span class="state">${i.available ? 'Available' : 'Sold out'}</span>
       <label class="switch"><span class="sr">${esc(i.name)} available</span><input type="checkbox" role="switch" ${i.available ? 'checked' : ''} onchange="toggleAvail('${esc(i.id)}',this.checked)"><i></i></label></div>`).join('')}</div>`).join('');
 }
@@ -82,13 +111,14 @@ function renderTables(tables) {
   $('#tablesBox').innerHTML = tables.map(t => {
     const m = String(t.label).match(/^(.*\S)\s+(\S+)$/);
     return `<div class="tcard"><div class="plaque sm"><span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : t.label)}</span></div>
-    <div class="tcard__qr"><img src="/qr?table=${encodeURIComponent(t.id)}" alt="QR code for ${esc(t.label)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'QR unavailable — run npm install once. The link below still works.'}))"></div>
-    <a href="/guest?table=${encodeURIComponent(t.id)}">/guest?table=${esc(t.id)}</a></div>`;
+    <div class="tcard__qr"><img src="/qr?r=${encodeURIComponent(UI.rid)}&table=${encodeURIComponent(t.id)}" alt="QR code for ${esc(t.label)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'QR unavailable — run npm install once. The link below still works.'}))"></div>
+    <a href="/r/${esc(UI.rid)}/guest?table=${encodeURIComponent(t.id)}">Open menu</a><button class="btn small plain rmtable" type="button" data-del="${esc(t.id)}">Remove</button></div>`;
   }).join('');
 }
-function renderSettings(s) {
+function renderSettings(s, name) {
   if (settingsDirty) return;
   $('#settingsBox').innerHTML = `<div class="setrow">
+    <label class="field name"><span>Restaurant name</span><input type="text" id="restNameInput" maxlength="60" value="${esc(name || '')}"></label>
     <label class="field pct"><span>Card surcharge</span><input type="text" id="cardPct" inputmode="decimal" value="${esc(s.cardSurchargePct)}"></label>
     <label class="field pct"><span>Public-holiday surcharge</span><input type="text" id="holPct" inputmode="decimal" value="${esc(s.holidaySurchargePct)}"></label>
     <label class="toggle"><span class="switch"><input type="checkbox" role="switch" id="holMode" ${s.holidayMode ? 'checked' : ''}><i></i></span>Public-holiday mode</label>
@@ -97,27 +127,71 @@ function renderSettings(s) {
   $('#saveBtn').onclick = saveSettings;
 }
 async function load() {
-  const [oRes, { data: m }, { data: t }, { data: a }] = await Promise.all([api('/api/orders'), api('/api/menu'), api('/api/tables'), api('/api/assist')]);
+  const [oRes, { data: m }, { data: t }, { data: a }] = await Promise.all([api(UI.R('/orders')), api(UI.R('/menu')), api(UI.R('/tables')), api(UI.R('/assist'))]);
   if (oRes.status === 401) return location.reload();
   const { data: o } = oRes;
   allOrders = (o.orders || []).slice().sort((x, y) => new Date(y.createdAt) - new Date(x.createdAt));
-  renderOrders(); renderMenu(m); renderTables(t.tables || []); renderSettings(m.settings);
+  renderOrders(); renderMenu(m); renderTables(t.tables || []); renderSettings(m.settings, m.restaurant);
   const reqs = a.requests || [];
   $('#assist').innerHTML = reqs.length ? `<div class="a-assist" role="alert">${icon('bell')}<strong>Guests need staff:</strong>${reqs.map(r => `<span class="row" style="gap:8px"><b>${esc(r.tableLabel)}</b><button class="btn small danger" type="button" onclick="doneAssist('${esc(r.id)}')">Done</button></span>`).join('')}</div>` : '';
 }
-window.doneAssist = async (id) => { await send('/api/assist/' + id + '/done', 'POST'); load(); };
-window.toggleAvail = async (id, available) => { await send('/api/menu/' + id + '/availability', 'PATCH', { available }); load(); };
+window.doneAssist = async (id) => { await send(UI.R('/assist/') + id + '/done', 'POST'); load(); };
+window.toggleAvail = async (id, available) => { await send(UI.R('/menu/') + id + '/availability', 'PATCH', { available }); load(); };
 async function saveSettings() {
   const btn = $('#saveBtn'); btn.disabled = true;
-  const { ok } = await send('/api/settings', 'PATCH', { cardSurchargePct: parseFloat($('#cardPct').value) || 0, holidaySurchargePct: parseFloat($('#holPct').value) || 0, holidayMode: $('#holMode').checked });
+  const { ok, data } = await send(UI.R('/settings'), 'PATCH', { restaurantName: $('#restNameInput').value, cardSurchargePct: parseFloat($('#cardPct').value) || 0, holidaySurchargePct: parseFloat($('#holPct').value) || 0, holidayMode: $('#holMode').checked });
   btn.disabled = false; settingsDirty = !ok;
-  $('#savedMsg').innerHTML = ok ? `<span class="saved">${icon('check')}Saved</span>` : '<span class="muted" style="color:var(--paprika-deep)">Could not save — try again.</span>';
+  $('#savedMsg').innerHTML = ok ? `<span class="saved">${icon('check')}Saved</span>` : `<span class="muted" style="color:var(--paprika-deep)">${esc(data.error || 'Could not save — try again.')}</span>`;
+  if (ok && data.restaurant) { $('#restName').textContent = data.restaurant; document.title = 'Admin — ' + data.restaurant; }
 }
+
+/* --- Dish editor --- */
+let editingId = null;
+$('#dStation').innerHTML = STATIONS.map(s => `<option>${s}</option>`).join('');
+$('#dDiet').innerHTML = DIET.map(([v, l]) => `<label class="toggle chk"><input type="checkbox" value="${v}"> ${l}</label>`).join('');
+$$('[data-close]').forEach(b => { b.innerHTML = icon('x'); b.onclick = () => b.closest('dialog').close(); });
+$('#dishCancel').onclick = () => $('#dishDlg').close();
+$('#dishDlg').addEventListener('click', e => { if (e.target === $('#dishDlg')) $('#dishDlg').close(); });
+function openDish(id) {
+  const it = id ? menuItems.find(m => m.id === id) : null; editingId = it ? it.id : null;
+  $('#dishTitle').textContent = it ? 'Edit dish' : 'Add a dish';
+  $('#dName').value = it?.name || ''; $('#dDesc').value = it?.desc || ''; $('#dPrice').value = it ? it.price : '';
+  $('#dCat').value = it?.category || ''; $('#dStation').value = it?.station || 'Kitchen';
+  $$('#dDiet input').forEach(c => { c.checked = !!it && it.dietary.includes(c.value); });
+  $('#catList').innerHTML = [...new Set(menuItems.map(m => m.category))].map(c => `<option value="${esc(c)}">`).join('');
+  $('#dishDelete').hidden = !it; $('#dishErr').hidden = true;
+  $('#dishDlg').showModal(); $('#dName').focus();
+}
+$('#addDish').onclick = () => openDish(null);
+$('#menuAdmin').addEventListener('click', e => { const b = e.target.closest('[data-edit]'); if (b) openDish(b.dataset.edit); });
+$('#dishForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const body = { name: $('#dName').value, desc: $('#dDesc').value, price: parseFloat($('#dPrice').value.replace(/,/g, '')), category: $('#dCat').value, station: $('#dStation').value, dietary: $$('#dDiet input:checked').map(c => c.value) };
+  const btn = $('#dishSave'); btn.disabled = true;
+  const { ok, data } = editingId ? await send(UI.R('/menu/') + editingId, 'PATCH', body) : await send(UI.R('/menu'), 'POST', body);
+  btn.disabled = false;
+  if (!ok) { $('#dishErr').innerHTML = icon('alert') + '<span>' + esc(data.error || 'Could not save the dish.') + '</span>'; $('#dishErr').hidden = false; return; }
+  $('#dishDlg').close(); load();
+};
+$('#dishDelete').onclick = async () => {
+  const it = menuItems.find(m => m.id === editingId); if (!it) return;
+  if (!confirm('Remove “' + it.name + '” from the menu? Past orders keep their record.')) return;
+  const { ok } = await send(UI.R('/menu/') + editingId, 'DELETE');
+  if (ok) { $('#dishDlg').close(); load(); }
+};
+
+/* --- Tables --- */
+$('#addTable').onclick = async () => { const { ok, data } = await send(UI.R('/tables'), 'POST', {}); if (!ok) return alert(data.error || 'Could not add a table.'); load(); };
+$('#tablesBox').addEventListener('click', async e => {
+  const b = e.target.closest('[data-del]'); if (!b) return;
+  if (!confirm('Remove this table? Its printed QR code will stop working.')) return;
+  const { ok } = await send(UI.R('/tables/') + b.dataset.del, 'DELETE'); if (ok) load();
+});
 ensureStaff({ roles: ['manager'] }).then((me) => {
   if (!me) return; // sign-in overlay is showing
   $('#staffUser').textContent = me.user + ' · ' + me.role;
   wireSignOut();
-  try { const es = new EventSource('/api/events'); es.addEventListener('order', load); es.addEventListener('menu', load); es.addEventListener('assist', load); } catch {}
+  try { const es = new EventSource(UI.R('/events')); es.addEventListener('order', load); es.addEventListener('menu', load); es.addEventListener('assist', load); } catch {}
   setInterval(load, 8000); load();
 });
 </script>

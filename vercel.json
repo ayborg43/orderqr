@@ -1,9 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    { "source": "/guest", "destination": "/r/the-corner-table/guest", "permanent": false },
+    { "source": "/kitchen", "destination": "/r/the-corner-table/kitchen", "permanent": false },
+    { "source": "/admin", "destination": "/r/the-corner-table/admin", "permanent": false }
+  ],
   "rewrites": [
-    { "source": "/guest", "destination": "/guest.html" },
-    { "source": "/kitchen", "destination": "/kitchen.html" },
-    { "source": "/admin", "destination": "/admin.html" },
+    { "source": "/signup", "destination": "/signup.html" },
+    { "source": "/r/:slug", "destination": "/restaurant.html" },
+    { "source": "/r/:slug/guest", "destination": "/guest.html" },
+    { "source": "/r/:slug/kitchen", "destination": "/kitchen.html" },
+    { "source": "/r/:slug/admin", "destination": "/admin.html" },
     { "source": "/qr", "destination": "/api/qr" }
   ]
 }

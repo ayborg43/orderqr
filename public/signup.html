@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e3727">
+<title>Create your restaurant · OrderQR</title>
+<link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="home">
+<header class="n-nav">
+  <div class="n-nav__in">
+    <a class="n-logo" href="/" aria-label="OrderQR home">
+      <span class="n-logo__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg></span>
+      <span>OrderQR<small>QR ordering for restaurants</small></span>
+    </a>
+    <div class="n-nav__cta"><a class="n-link-quiet" href="/r/the-corner-table">Try the demo</a></div>
+  </div>
+</header>
+<main class="n-in signup">
+  <div class="signup__intro">
+    <p class="n-kicker">Get started</p>
+    <h1>Create your restaurant</h1>
+    <p class="n-sub">Each restaurant gets its own address, menu, tables, QR codes and staff logins. You can change the menu and add tables after signing up.</p>
+    <ul class="n-checks signup__points">
+      <li><span data-ic="checkCircle"></span> A sample menu to edit, or start empty</li>
+      <li><span data-ic="checkCircle"></span> Printable QR cards for every table</li>
+      <li><span data-ic="checkCircle"></span> Kitchen display and admin dashboard</li>
+    </ul>
+    <p class="muted signup__note">Payments are simulated in this version. Guests pay with demo cards and no real money moves.</p>
+  </div>
+
+  <form class="hub__card signup__form" id="form" novalidate>
+    <label class="field"><span>Restaurant name</span><input type="text" id="name" maxlength="60" autocomplete="organization" required placeholder="Lagos Grill House"></label>
+    <label class="field"><span>Web address</span>
+      <span class="slugrow"><span class="slugrow__pre" id="origin">orderqr/r/</span><input type="text" id="slug" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false" required></span>
+      <span class="hint" id="slugHint" aria-live="polite"></span>
+    </label>
+    <div class="formgrid">
+      <label class="field"><span>Your username</span><input type="text" id="username" maxlength="32" autocomplete="username" autocapitalize="none" required></label>
+      <label class="field"><span>Your password</span><input type="password" id="password" minlength="8" autocomplete="new-password" required><span class="hint">At least 8 characters</span></label>
+      <label class="field"><span>Number of tables</span><input type="number" id="tables" min="1" max="60" value="10" inputmode="numeric"></label>
+      <label class="field"><span>Kitchen screen password <em>(optional)</em></span><input type="password" id="kitchenPassword" minlength="8" autocomplete="new-password"><span class="hint">Lets kitchen staff sign in without admin access</span></label>
+    </div>
+    <label class="toggle chk" style="align-self:flex-start"><input type="checkbox" id="sample" checked> Start with a sample menu</label>
+    <p class="inline-err" id="err" role="alert" hidden></p>
+    <button class="btn lg block" type="submit" id="go">Create restaurant</button>
+  </form>
+</main>
+<script src="/ui.js"></script>
+<script>
+const { $, $$, icon, send, api } = UI;
+$$('[data-ic]').forEach(el => { el.innerHTML = icon(el.dataset.ic); });
+$('#origin').textContent = location.host + '/r/';
+const slugify = (s) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '');
+let slugTouched = false, timer;
+$('#name').addEventListener('input', () => { if (!slugTouched) { $('#slug').value = slugify($('#name').value); check(); } });
+$('#slug').addEventListener('input', () => { slugTouched = true; check(); });
+function check() {
+  clearTimeout(timer);
+  const slug = $('#slug').value.trim().toLowerCase(), hint = $('#slugHint');
+  hint.className = 'hint'; if (!slug) { hint.textContent = ''; return; }
+  hint.textContent = 'Checking…';
+  timer = setTimeout(async () => {
+    const { data } = await api('/api/restaurants/check?slug=' + encodeURIComponent(slug));
+    if ($('#slug').value.trim().toLowerCase() !== slug) return;
+    hint.className = 'hint ' + (data.available ? 'ok' : 'bad');
+    hint.textContent = data.available ? 'Available: ' + location.host + '/r/' + slug : (data.reason || 'Not available');
+  }, 300);
+}
+function fail(msg, field) {
+  $('#err').innerHTML = icon('alert') + '<span>' + UI.esc(msg) + '</span>'; $('#err').hidden = false;
+  const el = field && $('#' + field); if (el) el.focus();
+}
+$('#form').onsubmit = async (e) => {
+  e.preventDefault(); $('#err').hidden = true;
+  const btn = $('#go'); btn.disabled = true; btn.textContent = 'Creating…';
+  const { ok, data } = await send('/api/restaurants', 'POST', {
+    name: $('#name').value, slug: $('#slug').value.trim().toLowerCase(), username: $('#username').value,
+    password: $('#password').value, kitchenPassword: $('#kitchenPassword').value,
+    tables: parseInt($('#tables').value, 10) || 10, sampleMenu: $('#sample').checked,
+  });
+  if (ok) { location.href = data.adminUrl; return; }
+  btn.disabled = false; btn.textContent = 'Create restaurant';
+  fail(data.error || 'Could not create the restaurant. Try again.', data.field === 'kitchenPassword' ? 'kitchenPassword' : data.field);
+};
+</script>
+</body>
+</html>

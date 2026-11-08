@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#061a12">
-<title>Kitchen — The Corner Table</title>
+<title>Kitchen</title>
 <link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body class="kds">
 <header class="k-head">
-  <h1>Kitchen</h1>
+  <h1>Kitchen<small class="k-rest" id="restName"></small></h1>
   <span class="k-live" id="connWrap"><i></i><span id="conn">connecting…</span></span>
   <span class="spacer"></span>
   <span class="staff-user" id="staffUser"></span>
@@ -27,20 +27,21 @@
 const { $, $$, esc, fmt, icon, send, api, ensureStaff, wireSignOut } = UI;
 const STATIONS = ['Grill', 'Kitchen', 'Drinks', 'Dessert'];
 let station = '', orders = [], seen = null;
-$('#homeLink').innerHTML = icon('home') + 'Home';
+$('#homeLink').innerHTML = icon('home') + 'Overview'; $('#homeLink').href = '/r/' + UI.rid;
+UI.info.then(r => { $('#restName').textContent = r.name; document.title = 'Kitchen — ' + r.name; });
 
 function minsAgo(iso) { return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000)); }
 function ago(m) { return m < 60 ? m + ' min' : m < 1440 ? Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm' : Math.floor(m / 1440) + 'd+'; }
 async function load() {
-  const { status, data: d } = await api('/api/orders');
+  const { status, data: d } = await api(UI.R('/orders'));
   if (status === 401) return location.reload();
   orders = (d.orders || []).filter(o => o.payment.state === 'paid-demo' && o.status !== 'Served' && o.status !== 'Cancelled')
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   render();
-  const { data: a } = await api('/api/assist'); const reqs = a.requests || [];
+  const { data: a } = await api(UI.R('/assist')); const reqs = a.requests || [];
   $('#assist').innerHTML = reqs.length ? `<div class="k-assist" role="alert">${icon('bell')}<span><b>Staff requested:</b></span>${reqs.map(r => `<span class="row" style="gap:8px"><b>${esc(r.tableLabel)}</b><button class="btn small" type="button" onclick="doneAssist('${esc(r.id)}')">Done</button></span>`).join('')}</div>` : '';
 }
-window.doneAssist = async (id) => { await send('/api/assist/' + id + '/done', 'POST'); load(); };
+window.doneAssist = async (id) => { await send(UI.R('/assist/') + id + '/done', 'POST'); load(); };
 
 function renderStations() {
   const count = (s) => orders.filter(o => !s || o.items.some(i => i.station === s)).length;
@@ -71,7 +72,7 @@ function render() {
     : `<div class="k-empty">${icon('checkCircle')}<strong>${station ? station + ' is clear' : 'All clear'}</strong>New paid orders appear here the moment they land.</div>`;
   seen = new Set(orders.map(o => o.id));
 }
-window.setStatus = async (id, status) => { await send('/api/orders/' + id, 'PATCH', { status }); load(); };
+window.setStatus = async (id, status) => { await send(UI.R('/orders/') + id, 'PATCH', { status }); load(); };
 window.cancelOrder = async (id) => { if (confirm('Cancel this order because the kitchen cannot fulfil it? The guest will be told.')) setStatus(id, 'Cancelled'); };
 $('#stations').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; station = b.dataset.s; render(); });
 
@@ -81,7 +82,7 @@ ensureStaff().then((me) => {
   $('#staffUser').textContent = me.user + ' · ' + me.role;
   wireSignOut();
   try {
-    const es = new EventSource('/api/events');
+    const es = new EventSource(UI.R('/events'));
     es.addEventListener('ready', () => setConn('on', 'Live'));
     es.addEventListener('order', load); es.addEventListener('assist', load);
     es.onerror = () => setConn('bad', 'Reconnecting — polling');

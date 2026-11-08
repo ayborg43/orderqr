@@ -54,19 +54,33 @@
   }
   const send = (url, method, body) => api(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
 
+  /* --- Multi-restaurant: pages live under /r/<slug>/..., the API under /api/r/<slug>/... --- */
+  const rid = (location.pathname.match(/^\/r\/([a-z0-9-]+)/) || [])[1] || null;
+  const R = (p = '') => '/api/r/' + rid + p;
+  // Resolves to { slug, name, demo }; swaps the page for a "not found" panel when the address is wrong.
+  const info = rid ? api(R('/')).then(({ ok, data }) => {
+    if (!ok) {
+      document.title = 'Restaurant not found';
+      const render = () => { document.body.className = ''; document.body.innerHTML = '<main class="wrap" style="max-width:34rem;margin-top:12vh;text-align:center"><h1>Restaurant not found</h1><p class="muted" style="margin:12px 0 22px">Check the address, or ask the restaurant for their current link.</p><a class="btn" href="/">Go to the home page</a></main>'; };
+      if (document.body) render(); else document.addEventListener('DOMContentLoaded', render);
+      return new Promise(() => {}); // never resolves: the page must not carry on without a restaurant
+    }
+    return data;
+  }) : Promise.resolve(null);
+
   /* --- Staff sign-in gate (kitchen/admin pages) --- */
-  async function authMe() { const r = await api('/api/auth/me'); return r.ok ? r.data : null; }
+  async function authMe() { const r = await api(R('/auth/me')); return r.ok ? r.data : null; }
   function wireSignOut() {
     const b = $('#signOut'); if (!b) return;
     b.hidden = false;
-    b.onclick = async () => { await send('/api/auth/logout', 'POST'); location.reload(); };
+    b.onclick = async () => { await send(R('/auth/logout'), 'POST'); location.reload(); };
   }
   // Shows a sign-in overlay until a staff session exists (and, if `roles` is
   // given, has one of those roles). Resolves with { user, role } or null when
   // the signed-in role is not allowed here (overlay stays up with a message).
   function ensureStaff({ roles } = {}) {
     return new Promise(async (resolve) => {
-      const me = await authMe();
+      const me = await authMe(); const rest = await info;
       if (me && (!roles || roles.includes(me.role))) return resolve(me);
       let gate = $('#authGate');
       if (!gate) {
@@ -76,22 +90,22 @@
       }
       const wrongRole = me && roles && !roles.includes(me.role);
       gate.innerHTML = `<form class="auth-card" id="authForm">
-        <span class="auth-card__brand">${esc(document.title.split('—')[0].trim() || 'Staff')}</span>
+        <span class="auth-card__brand">${esc(rest?.name || 'Staff')}</span>
         <h2>Staff sign in</h2>
         ${wrongRole ? `<p class="auth-card__msg">You are signed in as <b>${esc(me.user)}</b> (${esc(me.role)}). This screen needs a ${esc(roles.join(' or '))} account.</p>` : '<p class="auth-card__msg">Kitchen and admin screens are for staff only. Guests order from the table QR code.</p>'}
         ${wrongRole ? '<button class="btn block" type="button" id="authSwitch">Sign in as someone else</button>' : `<label class="field"><span>Username</span><input type="text" id="authUser" autocomplete="username" required></label>
         <label class="field"><span>Password</span><input type="password" id="authPass" autocomplete="current-password" required></label>
         <p class="auth-card__err" id="authErr" role="alert"></p>
         <button class="btn block lg" type="submit">Sign in</button>
-        <p class="auth-card__hint">Demo accounts — manager: <b>admin / admin123</b> · kitchen: <b>kitchen / kitchen123</b><br>Change them with MANAGER_PASSWORD / KITCHEN_PASSWORD.</p>`}
+        ${rest?.demo ? '<p class="auth-card__hint">Demo accounts — manager: <b>admin / admin123</b> · kitchen: <b>kitchen / kitchen123</b></p>' : ''}`}
         <a class="auth-card__home" href="/">← Back to home</a></form>`;
       if (wrongRole) {
-        $('#authSwitch', gate).onclick = async () => { await send('/api/auth/logout', 'POST'); location.reload(); };
+        $('#authSwitch', gate).onclick = async () => { await send(R('/auth/logout'), 'POST'); location.reload(); };
         return resolve(null);
       }
       $('#authForm', gate).onsubmit = async (e) => {
         e.preventDefault();
-        const { ok, data } = await send('/api/auth/login', 'POST', { username: $('#authUser', gate).value.trim(), password: $('#authPass', gate).value });
+        const { ok, data } = await send(R('/auth/login'), 'POST', { username: $('#authUser', gate).value.trim(), password: $('#authPass', gate).value });
         if (ok) location.reload();
         else $('#authErr', gate).textContent = data.error || 'Sign-in failed. Try again.';
       };
@@ -99,5 +113,5 @@
     });
   }
 
-  window.UI = { icon, esc, fmt, $, $$, glaze, slug, dietTag, STEPS, toast, api, send, authMe, ensureStaff, wireSignOut };
+  window.UI = { rid, R, info, icon, esc, fmt, $, $$, glaze, slug, dietTag, STEPS, toast, api, send, authMe, ensureStaff, wireSignOut };
 })();

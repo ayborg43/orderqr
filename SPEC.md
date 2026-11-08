@@ -1,8 +1,9 @@
-# QR Restaurant Ordering — Spec & Plan (MVP)
+# OrderQR: Spec & Plan (MVP)
 
 ## 1. Scope (agreed)
 
-- **One restaurant**, single location, dine-in only for v1.
+- **Multiple restaurants** on one platform (multi-tenant), each a single location, dine-in only for v1.
+  Every restaurant has its own address, menu, tables, orders, settings and staff logins (see §4a).
 - **Demo payment only** — no real gateway, no real money. Demo cards simulate approve/decline.
 - References: Nomni QR ordering (guest experience) + LynnC table-to-kitchen guide (operations).
 
@@ -13,10 +14,12 @@ multi-branch, loyalty, delivery/takeaway, native apps. Each is a later phase (§
 
 | Surface | User | URL |
 |---|---|---|
-| Guest ordering | Diner (phone, no download/login) | `/guest?table=5` |
-| Kitchen display (KDS) | Kitchen staff (tablet/monitor) | `/kitchen` |
-| Admin dashboard | Manager / front-of-house | `/admin` |
-| Landing | Anyone | `/` links to the three surfaces + demo tables |
+| Guest ordering | Diner (phone, no download/login) | `/r/<slug>/guest?table=5` |
+| Kitchen display (KDS) | Kitchen staff (tablet/monitor) | `/r/<slug>/kitchen` |
+| Admin dashboard | Manager / front-of-house | `/r/<slug>/admin` |
+| Restaurant overview | Anyone | `/r/<slug>` |
+| Sign-up | Restaurant owner | `/signup` |
+| Landing | Anyone | `/` explains the platform, links to sign-up and the demo restaurant |
 
 ## 3. Core flow
 
@@ -56,6 +59,15 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - A4. Settings: card surcharge % and public-holiday surcharge % toggles applied at checkout and itemised.
 - A5. Staff-assistance requests list, clearable.
 
+### 4a. Multi-restaurant
+- M1. A restaurant signs up with a name, a unique address (slug: 3–40 lowercase letters, numbers, single hyphens; reserved words refused), a manager login, a table count and an optional kitchen login.
+- M2. All data (menu, tables, orders, settings, assistance requests, staff) is scoped to one restaurant; no API call can read or change another restaurant's data.
+- M3. A staff session is signed for one restaurant; it is rejected anywhere else, including after re-labelling the cookie.
+- M4. Managers add, edit, remove and mark-sold-out dishes, add or remove tables, rename the restaurant and set surcharges. Kitchen staff cannot.
+- M5. Each table QR code encodes `<public base>/r/<slug>/guest?table=<id>`; unknown restaurants return 404.
+- M6. Passwords are stored as salted scrypt hashes; sign-up is rate limited per address; logins are throttled per address and restaurant.
+- M7. A demo restaurant (`the-corner-table`) always exists. Old single-restaurant URLs and stores keep working.
+
 ## 5. Non-functional
 
 - N1. Works on mobile browsers, no install, no guest account.
@@ -69,14 +81,18 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - Only optional dependency: `qrcode` (QR SVG for table cards). App runs without it (links still work).
 - Start: `npm start` → `http://localhost:3000`. Tests: `npm test` (API smoke test, Node built-in test runner).
 
-Data model: `tables[{id,label}]`, `menuItems[{id,name,desc,price,category,station,dietary[],available,modifierGroups[]}]`,
-`orders[{id,tableId,items[],subtotal,surcharges,total,status,payment:{state,last4},idempotencyKey,createdAt,history[]}]`,
-`settings{cardSurchargePct,holidaySurchargePct,holidayMode}`, `assistRequests[]`.
+Data model: `restaurants{ [slug]: { slug, name, createdAt, staff[{username,role,hash}], tables[{id,label}],
+menu[{id,name,desc,price,category,station,dietary[],available,modifierGroups[]}],
+orders[{id,tableId,items[],subtotal,surcharges,total,status,payment:{state,last4},idempotencyKey,createdAt,history[]}],
+settings{cardSurchargePct,holidaySurchargePct,holidayMode}, assistRequests[], seq } }`.
+API: public and staff routes live under `/api/r/<slug>/...`; `POST /api/restaurants` signs a restaurant up and
+`GET /api/restaurants/check?slug=` tests an address.
 
 ## 7. Later phases (not built)
 
-1. Real payment gateway + refunds / split bill. 2. Named POS integration + ESC/POS printers.
-3. Multi-branch. 4. Loyalty, takeaway/delivery, PWA venue app. 5. Arabic/English i18n + RTL.
+1. A database instead of the JSON file (required before real restaurants rely on a serverless deployment), plus password reset and more staff accounts per restaurant.
+2. Real payment gateway + refunds / split bill; a per-restaurant currency. 3. Named POS integration + ESC/POS printers.
+4. Multi-branch per restaurant; modifier-group editing in admin. 5. Loyalty, takeaway/delivery, PWA venue app. 6. Arabic/English i18n + RTL.
 
 ## 8. Acceptance checks (demo script)
 

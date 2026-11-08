@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0e3727">
-<title>Order — The Corner Table</title>
+<title>Order</title>
 <link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -14,7 +14,7 @@
 <header class="g-head">
   <div class="g-head__in">
     <div class="g-top">
-      <div class="g-brand"><span id="restName">The Corner Table</span><small>Order &amp; pay from your seat</small></div>
+      <div class="g-brand"><span id="restName"></span><small>Order &amp; pay from your seat</small></div>
       <button class="btn small" id="callStaff" type="button"><span id="bellIc"></span>Call staff</button>
     </div>
     <div class="g-table">
@@ -91,7 +91,7 @@
 <script>
 const { $, $$, esc, fmt, icon, glaze, slug, dietTag, STEPS, toast, send } = UI;
 const tableId = new URLSearchParams(location.search).get('table');
-const cartKey = 'cart-' + tableId;
+const cartKey = 'cart-' + UI.rid + '-' + tableId;
 let menu = [], cart = [], filter = '', idemKey = null, tableLabel = '', seenStatus = {};
 try { cart = JSON.parse(localStorage.getItem(cartKey) || '[]'); } catch { cart = []; }
 
@@ -104,8 +104,9 @@ function setPlaque(label) {
   $('#tablePlaque').innerHTML = `<span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : label)}</span>`;
 }
 
+UI.info.then(r => { $('#restName').textContent = r.name; document.title = 'Order — ' + r.name; });
 async function load() {
-  const { data: t } = await UI.api('/api/tables');
+  const { data: t } = await UI.api(UI.R('/tables'));
   const table = (t.tables || []).find(x => x.id === String(tableId));
   if (!table) {
     setPlaque('Table ?'); $('#tablePlaque').style.background = 'var(--paprika)';
@@ -119,7 +120,7 @@ async function load() {
   await loadMenu(); renderCart(); loadOrders();
 }
 async function loadMenu() {
-  const { data: m } = await UI.api('/api/menu');
+  const { data: m } = await UI.api(UI.R('/menu'));
   $('#restName').textContent = m.restaurant; document.title = 'Order — ' + m.restaurant;
   menu = m.items; $('#tools').hidden = false; renderMenu();
 }
@@ -224,7 +225,7 @@ function renderCart() {
 
 /* ---------- checkout ---------- */
 async function openPay() {
-  const { ok, data } = await send('/api/orders/preview', 'POST', { items: cart });
+  const { ok, data } = await send(UI.R('/orders/preview'), 'POST', { items: cart });
   if (!ok) {
     if (data.soldOut) { cart = cart.filter(c => c.menuItemId !== data.soldOut); saveCart(); renderCart(); await loadMenu(); }
     toast(esc(data.error || 'Could not price your basket') + (data.soldOut ? ' — we removed it from your basket.' : ' — please update your basket.'), 'err');
@@ -252,7 +253,7 @@ $$('[data-card]').forEach(b => b.onclick = () => { $('#card').value = b.dataset.
 $('#payNow').onclick = async () => {
   if (!idemKey) idemKey = 'guest-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const btn = $('#payNow'); btn.disabled = true; const label = btn.innerHTML; btn.textContent = 'Processing…';
-  const { ok, data } = await send('/api/orders', 'POST', { tableId, items: cart, idempotencyKey: idemKey, payment: { cardNumber: $('#card').value } });
+  const { ok, data } = await send(UI.R('/orders'), 'POST', { tableId, items: cart, idempotencyKey: idemKey, payment: { cardNumber: $('#card').value } });
   btn.disabled = false; btn.innerHTML = label;
   if (!ok) { $('#payAlert').innerHTML = `<div class="inline-err" role="alert">${icon('alert')}<span>${esc(data.error || 'Payment failed')}</span></div>`; idemKey = null; return; }
   cart = []; saveCart(); renderCart(); $('#payDlg').close();
@@ -261,7 +262,7 @@ $('#payNow').onclick = async () => {
 };
 
 /* ---------- orders & bill ---------- */
-const paidOrders = async () => { const { data } = await UI.api('/api/orders?table=' + encodeURIComponent(tableId)); return (data.orders || []).filter(o => o.payment.state === 'paid-demo'); };
+const paidOrders = async () => { const { data } = await UI.api(UI.R('/orders?table=') + encodeURIComponent(tableId)); return (data.orders || []).filter(o => o.payment.state === 'paid-demo'); };
 function orderCard(o) {
   const idx = STEPS.indexOf(o.status);
   const cancelled = o.status === 'Cancelled';
@@ -291,7 +292,7 @@ $('#viewBill').onclick = async () => {
 };
 $('#billClose').onclick = () => $('#billDlg').close();
 $('#callStaff').onclick = async () => {
-  const { ok } = await send('/api/assist', 'POST', { tableId });
+  const { ok } = await send(UI.R('/assist'), 'POST', { tableId });
   toast(ok ? '<strong>Staff are on their way</strong><br>Someone will come to your table shortly.' : 'Could not notify staff — please flag down a team member.', ok ? 'ok' : 'err');
 };
 setInterval(loadOrders, 5000);

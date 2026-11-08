@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e3727">
+<title>Restaurant</title>
+<link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="home">
+<header class="n-nav">
+  <div class="n-nav__in">
+    <a class="n-logo" href="/" aria-label="OrderQR home">
+      <span class="n-logo__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg></span>
+      <span>OrderQR<small>QR ordering for restaurants</small></span>
+    </a>
+  </div>
+</header>
+<main class="n-in n-in--narrow hub">
+  <p class="n-kicker">Restaurant</p>
+  <h1 id="name" class="hub__name">&nbsp;</h1>
+  <p class="n-sub" id="lead">Guests order by scanning the QR code on their table.</p>
+
+  <section class="hub__card" aria-labelledby="staffH">
+    <h2 id="staffH">Staff</h2>
+    <div class="n-cta">
+      <a class="n-btn n-btn--dark lg" id="kitchenLink" href="#">Kitchen display</a>
+      <a class="n-btn n-btn--outline lg" id="adminLink" href="#">Admin dashboard</a>
+    </div>
+  </section>
+
+  <section class="hub__card" id="demoBox" hidden aria-labelledby="demoH">
+    <h2 id="demoH">Try a table</h2>
+    <p class="n-sub">This is the public demo restaurant. Pick a table to open the guest menu, then place an order with the demo card.</p>
+    <div class="plaques" id="tables"></div>
+  </section>
+</main>
+<script src="/ui.js"></script>
+<script>
+const { $, esc } = UI;
+UI.info.then((r) => {
+  document.title = r.name + ' · OrderQR';
+  $('#name').textContent = r.name;
+  $('#kitchenLink').href = '/r/' + r.slug + '/kitchen';
+  $('#adminLink').href = '/r/' + r.slug + '/admin';
+  if (!r.demo) return;
+  $('#demoBox').hidden = false;
+  UI.api(UI.R('/tables')).then(({ data }) => {
+    $('#tables').innerHTML = (data.tables || []).map((t) => {
+      const m = String(t.label).match(/^(.*\S)\s+(\S+)$/);
+      return `<a class="plaque sm" href="/r/${esc(r.slug)}/guest?table=${encodeURIComponent(t.id)}" aria-label="Open ${esc(t.label)}"><span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : t.label)}</span></a>`;
+    }).join('');
+  });
+});
+</script>
+</body>
+</html>

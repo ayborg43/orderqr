@@ -1,11 +1,11 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import QRCode from "qrcode";
+import { startServer } from "./helpers.mjs";
 
 const PORT = 3197;
 const base = `http://localhost:${PORT}`;
-let proc;
+let srv;
 
 // Rebuild the module matrix from the SVG our /qr endpoint returns.
 function matrixFromSvg(svg) {
@@ -31,7 +31,7 @@ function matrixFromText(text) {
   return grid;
 }
 const encodes = async (table, expectedUrl) => {
-  const r = await fetch(`${base}/qr?table=${table}`);
+  const r = await fetch(`${base}/qr?${table}`);
   assert.equal(r.status, 200);
   assert.match(r.headers.get("content-type"), /image\/svg\+xml/);
   const svg = await r.text();
@@ -39,13 +39,22 @@ const encodes = async (table, expectedUrl) => {
 };
 
 before(async () => {
-  proc = spawn("node", ["server.js"], { env: { ...process.env, PORT: String(PORT), PUBLIC_BASE_URL: "https://orderqr-omega.vercel.app" }, stdio: "ignore" });
-  for (let i = 0; i < 40; i++) { try { const r = await fetch(base + "/api/tables"); if (r.ok) return; } catch {} await new Promise((r) => setTimeout(r, 150)); }
-  throw new Error("server did not start");
+  srv = await startServer(PORT, { env: { PUBLIC_BASE_URL: "https://orderqr-omega.vercel.app" } });
 });
-after(() => proc?.kill());
+after(() => srv?.stop());
 
 test("table QR encodes the canonical production guest URL (https, not request host)", async () => {
-  await encodes("5", "https://orderqr-omega.vercel.app/guest?table=5");
-  await encodes("12", "https://orderqr-omega.vercel.app/guest?table=12");
+  await encodes("r=the-corner-table&table=5", "https://orderqr-omega.vercel.app/r/the-corner-table/guest?table=5");
+  await encodes("r=the-corner-table&table=12", "https://orderqr-omega.vercel.app/r/the-corner-table/guest?table=12");
+});
+
+test("a QR without a restaurant falls back to the demo restaurant", async () => {
+  await encodes("table=5", "https://orderqr-omega.vercel.app/r/the-corner-table/guest?table=5");
+});
+
+test("each restaurant's QR points at its own address; unknown restaurants get none", async () => {
+  const c = await fetch(`${base}/api/restaurants`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Kano Kitchen", username: "kano", password: "long-enough-pass" }) });
+  assert.equal(c.status, 201);
+  await encodes("r=kano-kitchen&table=3", "https://orderqr-omega.vercel.app/r/kano-kitchen/guest?table=3");
+  assert.equal((await fetch(`${base}/qr?r=ghost-place&table=1`)).status, 404);
 });

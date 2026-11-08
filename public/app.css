@@ -776,3 +776,44 @@ html{scroll-padding-top:84px}
   .n-nav__cta .n-btn{padding:0 14px}
 }
 .kds-board{grid-template-columns:repeat(auto-fill,minmax(min(310px,100%),1fr))}
+
+/* ==========================================================================
+   Multi-restaurant: forms (signup, dish editor), restaurant hub, admin extras
+   ========================================================================== */
+input[type=password],input[type=email],input[type=number],input[type=url]{width:100%;min-height:46px;padding:10px 14px;border:1.5px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink)}
+input[type=password]:focus-visible,input[type=email]:focus-visible,input[type=number]:focus-visible{outline:none;border-color:var(--brand);box-shadow:0 0 0 4px rgba(14,55,39,.2)}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:18px}
+.formgrid .span2{grid-column:1/-1}
+@media(max-width:520px){.formgrid{grid-template-columns:1fr}}
+fieldset.field{border:0;padding:0;margin:0;min-width:0}
+fieldset.field>legend{padding:0;margin-bottom:8px;font-size:13px;font-weight:650;color:var(--muted)}
+.toggle.chk{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 14px;border:1.5px solid var(--line);border-radius:999px;font-size:14px;font-weight:600;color:var(--ink);cursor:pointer}
+.toggle.chk:has(input:checked){background:var(--brand-tint);border-color:var(--brand)}
+.toggle.chk input{width:18px;height:18px;accent-color:var(--brand)}
+.btn.plainish{background:transparent;color:var(--paprika-deep);box-shadow:inset 0 0 0 1.5px var(--paprika)}
+.btn.plainish:hover{background:var(--paprika-tint);color:var(--paprika-deep)}
+.avail-row .edit{flex:none;color:var(--brand-deep);text-decoration:underline;text-underline-offset:3px}
+.avail-row .edit:hover{color:var(--brand);text-decoration:underline}
+.rmtable{color:var(--muted)}
+.setrow .name{grid-column:1/-1}
+.k-rest{display:block;font-family:var(--body);font-size:13px;font-weight:600;color:#9ee6bf;letter-spacing:0;margin-top:2px}
+.a-brand #restName{display:block}
+#dishForm .sheet__foot{flex-wrap:wrap}
+.hub{padding-top:56px;padding-bottom:80px}
+.hub__name{font-size:clamp(36px,6vw,60px);letter-spacing:-.035em;line-height:1;max-width:none}
+.hub__card{margin-top:28px;background:#fff;border:1px solid #eee9d3;border-radius:26px;padding:26px}
+.hub__card h2{font-size:22px}
+.hub .plaques a.plaque{color:#fff}
+.signup{display:grid;gap:36px;padding-top:48px;padding-bottom:80px;align-items:start}
+@media(min-width:900px){.signup{grid-template-columns:1fr 1.05fr;gap:64px}}
+.signup h1{font-size:clamp(36px,5vw,56px);letter-spacing:-.035em}
+.signup__points{margin-top:24px;flex-direction:column;gap:12px}
+.signup__note{margin-top:20px;font-size:14px;max-width:46ch}
+.signup__form{display:grid;gap:18px;margin-top:0}
+label.field>.slugrow{display:flex;align-items:stretch;margin-bottom:0;border:1.5px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}
+label.field>.slugrow:focus-within{border-color:var(--brand);box-shadow:0 0 0 4px rgba(14,55,39,.2)}
+.slugrow__pre{display:flex;align-items:center;padding-left:14px;color:var(--muted);font-weight:600;white-space:nowrap;font-size:14px}
+.slugrow input{border:0!important;box-shadow:none!important;border-radius:0;padding-left:2px;min-width:0}
+label.field>.hint,.hint{display:block;margin:6px 0 0;font-size:13px;font-weight:500;color:var(--muted);min-height:1.2em}
+.hint.ok{color:var(--basil-deep)}.hint.bad{color:var(--paprika-deep)}
+label.field em{font-style:normal;font-weight:500}
