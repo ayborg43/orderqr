@@ -639,3 +639,25 @@ body.home ::selection{background:var(--yellow);color:var(--nink)}
 .n-foot__base{margin-top:48px;border-top:1px solid rgba(255,255,255,.16);padding:20px 0 26px;display:flex;flex-wrap:wrap;gap:8px 28px;justify-content:space-between;color:rgba(255,255,255,.65);font-size:13.5px}
 @media(max-width:640px){.n-sec{padding:60px 0}.n-hero{padding-top:36px}.n-btn.lg{width:100%}}
 .n-hero__copy{min-width:0}
+
+/* ---------- QA fixes (desktop + mobile audit) ---------- */
+/* Table plaques were deep-green on the dark demo band (near-invisible): make them paper-white there. */
+.n-demo .plaque{background:#fff;color:var(--deep)}
+.n-demo .plaque::before{border-color:var(--brand)}
+.n-demo .plaques a:hover{color:var(--deep)}
+/* Wider nav breakpoint: links wrapped awkwardly between 901-1120px. */
+@media(max-width:1120px){.n-links,.n-link-quiet{display:none}}
+/* Larger tap targets (44px) for the main touch controls. */
+.g-nav a{min-height:44px}
+.chip{min-height:44px}
+.btn.small{min-height:42px}
+.btn.plain{min-height:42px}
+.tc .btn{min-height:40px}
+.a-nav a{padding-top:11px;padding-bottom:11px}
+.n-foot__col a{padding-top:7px;padding-bottom:7px}
+/* Hero: keep the QR card from covering the phone's dish names on desktop. */
+@media(min-width:980px){.n-hero__visual{place-items:center end}.n-phone{margin-right:34px}}
+/* Hero QR card: smaller so it stops covering the phone's status tracker. */
+.n-qr-card{width:182px}
+.n-qr-card img{width:112px;height:112px}
+@media(min-width:980px){.n-qr-card{left:-18px}}
