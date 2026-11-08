@@ -6,7 +6,7 @@
   "description": "QR table ordering MVP for one restaurant — guest ordering, demo payment, kitchen display, admin.",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/smoke.test.mjs"
+    "test": "node --test tests/smoke.test.mjs tests/auth.test.mjs tests/qr.test.mjs"
   },
   "engines": { "node": ">=20" },
   "optionalDependencies": { "qrcode": "^1.5.4" }

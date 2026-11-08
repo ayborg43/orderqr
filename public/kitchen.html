@@ -13,6 +13,8 @@
   <h1>Kitchen</h1>
   <span class="k-live" id="connWrap"><i></i><span id="conn">connecting…</span></span>
   <span class="spacer"></span>
+  <span class="staff-user" id="staffUser"></span>
+  <button class="btn small" type="button" id="signOut" hidden>Sign out</button>
   <a class="btn small" href="/" id="homeLink">Home</a>
 </header>
 <main class="wrap">
@@ -22,14 +24,15 @@
 </main>
 <script src="/ui.js"></script>
 <script>
-const { $, $$, esc, fmt, icon, send, api } = UI;
+const { $, $$, esc, fmt, icon, send, api, ensureStaff, wireSignOut } = UI;
 const STATIONS = ['Grill', 'Kitchen', 'Drinks', 'Dessert'];
 let station = '', orders = [], seen = null;
 $('#homeLink').innerHTML = icon('home') + 'Home';
 
 function minsAgo(iso) { return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000)); }
 async function load() {
-  const { data: d } = await api('/api/orders');
+  const { status, data: d } = await api('/api/orders');
+  if (status === 401) return location.reload();
   orders = (d.orders || []).filter(o => o.payment.state === 'paid-demo' && o.status !== 'Served' && o.status !== 'Cancelled')
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   render();
@@ -72,15 +75,20 @@ window.cancelOrder = async (id) => { if (confirm('Cancel this order because the 
 $('#stations').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; station = b.dataset.s; render(); });
 
 function setConn(cls, txt) { $('#connWrap').className = 'k-live ' + cls; $('#conn').textContent = txt; }
-try {
-  const es = new EventSource('/api/events');
-  es.addEventListener('ready', () => setConn('on', 'Live'));
-  es.addEventListener('order', load); es.addEventListener('assist', load);
-  es.onerror = () => setConn('bad', 'Reconnecting — polling');
-} catch { setConn('bad', 'Polling'); }
-setInterval(load, 6000);
-setInterval(() => { if (orders.length) render(); }, 30000);
-load();
+ensureStaff().then((me) => {
+  if (!me) return; // sign-in overlay is showing
+  $('#staffUser').textContent = me.user + ' · ' + me.role;
+  wireSignOut();
+  try {
+    const es = new EventSource('/api/events');
+    es.addEventListener('ready', () => setConn('on', 'Live'));
+    es.addEventListener('order', load); es.addEventListener('assist', load);
+    es.onerror = () => setConn('bad', 'Reconnecting — polling');
+  } catch { setConn('bad', 'Polling'); }
+  setInterval(load, 6000);
+  setInterval(() => { if (orders.length) render(); }, 30000);
+  load();
+});
 </script>
 </body>
 </html>

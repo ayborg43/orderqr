@@ -661,3 +661,17 @@ body.home ::selection{background:var(--yellow);color:var(--nink)}
 .n-qr-card{width:182px}
 .n-qr-card img{width:112px;height:112px}
 @media(min-width:980px){.n-qr-card{left:-18px}}
+
+/* ---------- Staff sign-in gate ---------- */
+.auth-gate{position:fixed;inset:0;z-index:100;background:rgba(7,26,18,.72);display:grid;place-items:center;padding:18px;overflow:auto}
+.auth-card{background:var(--surface);color:var(--ink);border-radius:24px;box-shadow:var(--shadow-2);width:min(420px,100%);padding:30px 28px 24px;display:grid;gap:14px}
+.auth-card__brand{font-family:var(--display);font-weight:800;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--basil-deep)}
+.auth-card h2{font-size:30px;color:var(--ink)}
+.auth-card__msg{color:var(--muted);line-height:1.5;font-size:15px}
+.auth-card__err{color:var(--paprika-deep);font-weight:650;font-size:14px;min-height:1.2em}
+.auth-card__hint{font-size:13px;color:var(--muted);line-height:1.55;background:var(--brand-tint);border-radius:12px;padding:10px 12px}
+.auth-card__home{justify-self:center;font-size:14px;font-weight:650}
+.staff-user{font-size:13.5px;font-weight:700;opacity:.85;white-space:nowrap}
+/* Gate text must stay readable on the dark kitchen theme too. */
+.auth-card__msg,.auth-card .field,.auth-card__hint{color:#4c5a52}
+.auth-card .field>span{color:#4c5a52}

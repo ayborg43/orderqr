@@ -7,12 +7,16 @@ const base = `http://localhost:${PORT}`;
 let proc;
 const j = async (r) => ({ status: r.status, body: await r.json() });
 const post = (p, b) => fetch(base + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).then(j);
-const patch = (p, b) => fetch(base + p, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).then(j);
+let staffCookie = "";
+const patch = (p, b) => fetch(base + p, { method: "PATCH", headers: { "Content-Type": "application/json", Cookie: staffCookie }, body: JSON.stringify(b) }).then(j);
 
 before(async () => {
   proc = spawn("node", ["server.js"], { env: { ...process.env, PORT: String(PORT) }, stdio: "ignore" });
-  for (let i = 0; i < 40; i++) { try { const r = await fetch(base + "/api/tables"); if (r.ok) return; } catch {} await new Promise((r) => setTimeout(r, 150)); }
-  throw new Error("server did not start");
+  for (let i = 0; i < 40; i++) { try { const r = await fetch(base + "/api/tables"); if (r.ok) break; } catch {} await new Promise((r) => setTimeout(r, 150)); }
+  // Staff sign-in (manager) — availability and status changes now require it.
+  const login = await fetch(base + "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "admin", password: "admin123" }) });
+  if (!login.ok) throw new Error("staff login failed in test setup");
+  staffCookie = (login.headers.get("set-cookie") || "").split(";")[0];
 });
 after(() => proc?.kill());
 

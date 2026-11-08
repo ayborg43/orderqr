@@ -103,12 +103,80 @@ function demoPay(cardNumber) {
   return { ok: true, last4: num.slice(-4) };
 }
 
+/* --- Staff authentication -------------------------------------------------
+   Signed, stateless session cookie (HMAC) so it works on serverless too.
+   Accounts come from env; the defaults exist only so the local demo runs —
+   set MANAGER_PASSWORD / KITCHEN_PASSWORD / SESSION_SECRET in production. */
+const SESSION_SECRET = process.env.SESSION_SECRET || "dev-only-change-me-in-production";
+const STAFF_ACCOUNTS = [
+  { username: process.env.MANAGER_USER || "admin", password: process.env.MANAGER_PASSWORD || "admin123", role: "manager" },
+  { username: process.env.KITCHEN_USER || "kitchen", password: process.env.KITCHEN_PASSWORD || "kitchen123", role: "kitchen" },
+];
+const SESSION_MS = 12 * 60 * 60 * 1000;
+const b64url = (s) => Buffer.from(s).toString("base64url");
+const signPayload = (payload) => crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+const safeEq = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+function makeSession({ username, role }) {
+  const payload = b64url(JSON.stringify({ u: username, r: role, exp: Date.now() + SESSION_MS }));
+  return `${payload}.${signPayload(payload)}`;
+}
+function staffFromReq(req) {
+  const raw = String(req.headers.cookie || "").split(";").map((c) => c.trim()).find((c) => c.startsWith("qr_staff="));
+  if (!raw) return null;
+  const [payload, sig] = raw.slice("qr_staff=".length).split(".");
+  if (!payload || !sig || !safeEq(sig, signPayload(payload))) return null;
+  try {
+    const s = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return s.u && s.r && s.exp > Date.now() ? { username: s.u, role: s.r } : null;
+  } catch { return null; }
+}
+function sessionCookie(req, value, maxAgeSec) {
+  const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
+  return `qr_staff=${value}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
+}
+function requireStaff(req, res, roles) {
+  const staff = staffFromReq(req);
+  if (!staff) { json(res, 401, { error: "Staff sign-in required", code: "AUTH_REQUIRED" }); return null; }
+  if (roles && !roles.includes(staff.role)) { json(res, 403, { error: "Your staff role cannot do this", code: "FORBIDDEN" }); return null; }
+  return staff;
+}
+// Basic login throttle: 8 failures per IP per 5 minutes.
+const loginFails = new Map();
+function loginThrottled(ip) {
+  const rec = loginFails.get(ip);
+  return rec && rec.count >= 8 && rec.until > Date.now();
+}
+function noteLoginFail(ip) {
+  const rec = loginFails.get(ip) || { count: 0, until: 0 };
+  rec.count += 1; rec.until = Date.now() + 5 * 60 * 1000;
+  loginFails.set(ip, rec);
+}
+
 const json = (res, code, body) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
 async function bodyJson(req) { let s = ""; for await (const c of req) s += c; try { return JSON.parse(s || "{}"); } catch { return {}; } }
 const publicOrder = (o) => o;
 
 async function handleApi(req, res, url) {
   const p = url.pathname;
+  // --- auth routes ---
+  if (req.method === "POST" && p === "/api/auth/login") {
+    const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || "?";
+    if (loginThrottled(ip)) return json(res, 429, { error: "Too many failed sign-ins. Try again in a few minutes." });
+    const b = await bodyJson(req);
+    const acct = STAFF_ACCOUNTS.find((a) => safeEq(a.username, b.username || "") && safeEq(a.password, b.password || ""));
+    if (!acct) { noteLoginFail(ip); return json(res, 401, { error: "Wrong username or password" }); }
+    loginFails.delete(ip);
+    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, makeSession(acct), SESSION_MS / 1000) });
+    return res.end(JSON.stringify({ user: acct.username, role: acct.role }));
+  }
+  if (req.method === "POST" && p === "/api/auth/logout") {
+    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, "", 0) });
+    return res.end(JSON.stringify({ ok: true }));
+  }
+  if (req.method === "GET" && p === "/api/auth/me") {
+    const staff = staffFromReq(req);
+    return staff ? json(res, 200, { user: staff.username, role: staff.role }) : json(res, 401, { error: "Staff sign-in required", code: "AUTH_REQUIRED" });
+  }
   if (req.method === "GET" && p === "/api/menu") return json(res, 200, { restaurant: store.settings.restaurantName, items: store.menu, settings: store.settings });
   if (req.method === "GET" && p === "/api/tables") return json(res, 200, { tables: store.tables });
 
@@ -147,10 +215,12 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "GET" && p === "/api/orders") {
     const tableId = url.searchParams.get("table");
+    if (!tableId && !requireStaff(req, res)) return;
     const list = store.orders.filter((o) => !tableId || o.tableId === tableId).slice().reverse();
     return json(res, 200, { orders: list });
   }
   if (req.method === "PATCH" && orderMatch) {
+    if (!requireStaff(req, res)) return;
     const o = store.orders.find((x) => x.id === orderMatch[1]);
     if (!o) return json(res, 404, { error: "Order not found" });
     const b = await bodyJson(req);
@@ -168,21 +238,24 @@ async function handleApi(req, res, url) {
     store.assistRequests.push(reqObj); await saveStore(); broadcast("assist", reqObj);
     return json(res, 201, { request: reqObj });
   }
-  if (req.method === "GET" && p === "/api/assist") return json(res, 200, { requests: store.assistRequests.filter((r) => !r.done).slice().reverse() });
+  if (req.method === "GET" && p === "/api/assist") { if (!requireStaff(req, res)) return; return json(res, 200, { requests: store.assistRequests.filter((r) => !r.done).slice().reverse() }); }
   const assistDone = p.match(/^\/api\/assist\/([\w-]+)\/done$/);
   if (req.method === "POST" && assistDone) {
+    if (!requireStaff(req, res)) return;
     const r = store.assistRequests.find((x) => x.id === assistDone[1]); if (r) r.done = true;
     await saveStore(); broadcast("assist", r); return json(res, 200, { ok: true });
   }
 
   const menuAvail = p.match(/^\/api\/menu\/([\w-]+)\/availability$/);
   if (req.method === "PATCH" && menuAvail) {
+    if (!requireStaff(req, res, ["manager"])) return;
     const item = store.menu.find((m) => m.id === menuAvail[1]);
     if (!item) return json(res, 404, { error: "Item not found" });
     const b = await bodyJson(req); item.available = !!b.available;
     await saveStore(); broadcast("menu", item); return json(res, 200, { item });
   }
   if (req.method === "PATCH" && p === "/api/settings") {
+    if (!requireStaff(req, res, ["manager"])) return;
     const b = await bodyJson(req);
     if (typeof b.holidayMode === "boolean") store.settings.holidayMode = b.holidayMode;
     if (Number.isFinite(b.cardSurchargePct)) store.settings.cardSurchargePct = b.cardSurchargePct;
@@ -191,6 +264,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && p === "/api/events") {
+    if (!requireStaff(req, res)) return;
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     res.write(`event: ready\ndata: {}\n\n`); clients.add(res);
     req.on("close", () => clients.delete(res)); return;
@@ -214,7 +288,15 @@ export async function appHandler(req, res) {
   try {
     if (url.pathname === "/qr" || url.pathname === "/api/qr") {
       // QR SVG for a table link, using optional `qrcode` package; falls back to text page.
-      const target = `${url.origin}/guest?table=${encodeURIComponent(url.searchParams.get("table") || "")}`;
+      // The code must point at the public site a phone can open — never at the
+      // host that happened to serve this image (localhost, a preview deploy,
+      // or an http:// origin). PUBLIC_BASE_URL wins; on Vercel fall back to
+      // the production domain; locally use the request origin (LAN demos).
+      const envBase = String(process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+      const publicBase = envBase || (process.env.VERCEL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || "orderqr-omega.vercel.app"}`
+        : url.origin);
+      const target = `${publicBase}/guest?table=${encodeURIComponent(url.searchParams.get("table") || "")}`;
       try {
         const QRCode = (await import("qrcode")).default;
         const svg = await QRCode.toString(target, { type: "svg", margin: 1, width: 240 });

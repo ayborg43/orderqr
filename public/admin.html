@@ -13,6 +13,8 @@
   <div class="a-head__in">
     <div class="a-brand">The Corner Table<small>Front of house</small></div>
     <nav class="a-nav" aria-label="Sections"><a href="#orders">Orders</a><a href="#menu">Menu</a><a href="#tables">Tables &amp; QR</a><a href="#settings">Surcharges</a></nav>
+    <span class="staff-user" id="staffUser"></span>
+    <button class="btn small ghost" type="button" id="signOut" hidden>Sign out</button>
     <a class="btn small ghost a-home" href="/" id="homeLink">Home</a>
   </div>
 </header>
@@ -43,7 +45,7 @@
 </main>
 <script src="/ui.js"></script>
 <script>
-const { $, $$, esc, fmt, icon, glaze, send, api } = UI;
+const { $, $$, esc, fmt, icon, glaze, send, api, ensureStaff, wireSignOut } = UI;
 const FILTERS = [['', 'All'], ['Received', 'Received'], ['Preparing', 'Preparing'], ['Ready', 'Ready'], ['Served', 'Served'], ['Cancelled', 'Cancelled'], ['PaymentFailed', 'Payment failed']];
 let status = '', allOrders = [], settingsDirty = false, tablesKey = '';
 $('#homeLink').innerHTML = icon('home') + 'Home'; $('#printBtn').innerHTML = icon('printer') + 'Print table cards';
@@ -92,7 +94,9 @@ function renderSettings(s) {
   $('#saveBtn').onclick = saveSettings;
 }
 async function load() {
-  const [{ data: o }, { data: m }, { data: t }, { data: a }] = await Promise.all([api('/api/orders'), api('/api/menu'), api('/api/tables'), api('/api/assist')]);
+  const [oRes, { data: m }, { data: t }, { data: a }] = await Promise.all([api('/api/orders'), api('/api/menu'), api('/api/tables'), api('/api/assist')]);
+  if (oRes.status === 401) return location.reload();
+  const { data: o } = oRes;
   allOrders = (o.orders || []).slice().sort((x, y) => new Date(y.createdAt) - new Date(x.createdAt));
   renderOrders(); renderMenu(m); renderTables(t.tables || []); renderSettings(m.settings);
   const reqs = a.requests || [];
@@ -106,8 +110,13 @@ async function saveSettings() {
   btn.disabled = false; settingsDirty = !ok;
   $('#savedMsg').innerHTML = ok ? `<span class="saved">${icon('check')}Saved</span>` : '<span class="muted" style="color:var(--paprika-deep)">Could not save — try again.</span>';
 }
-try { const es = new EventSource('/api/events'); es.addEventListener('order', load); es.addEventListener('menu', load); es.addEventListener('assist', load); } catch {}
-setInterval(load, 8000); load();
+ensureStaff({ roles: ['manager'] }).then((me) => {
+  if (!me) return; // sign-in overlay is showing
+  $('#staffUser').textContent = me.user + ' · ' + me.role;
+  wireSignOut();
+  try { const es = new EventSource('/api/events'); es.addEventListener('order', load); es.addEventListener('menu', load); es.addEventListener('assist', load); } catch {}
+  setInterval(load, 8000); load();
+});
 </script>
 </body>
 </html>
