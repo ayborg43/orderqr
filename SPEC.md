@@ -1,4 +1,4 @@
-# OrderQR: Spec & Plan (MVP)
+# Chopdesk: Spec & Plan (MVP)
 
 ## 1. Scope (agreed)
 

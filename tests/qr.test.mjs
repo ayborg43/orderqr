@@ -39,13 +39,13 @@ const encodes = async (table, expectedUrl) => {
 };
 
 before(async () => {
-  srv = await startServer(PORT, { env: { PUBLIC_BASE_URL: "https://orderqr-omega.vercel.app" } });
+  srv = await startServer(PORT, { env: { PUBLIC_BASE_URL: "https://chopdesk.propertypadi.com" } });
 });
 after(() => srv?.stop());
 
 test("table QR encodes the canonical production guest URL (https, not request host)", async () => {
-  await encodes("r=test-restaurant&table=5", "https://orderqr-omega.vercel.app/r/test-restaurant/guest?table=5");
-  await encodes("r=test-restaurant&table=12", "https://orderqr-omega.vercel.app/r/test-restaurant/guest?table=12");
+  await encodes("r=test-restaurant&table=5", "https://chopdesk.propertypadi.com/r/test-restaurant/guest?table=5");
+  await encodes("r=test-restaurant&table=12", "https://chopdesk.propertypadi.com/r/test-restaurant/guest?table=12");
 });
 
 test("a QR without a restaurant is a 404, never a fallback venue", async () => {
@@ -55,6 +55,6 @@ test("a QR without a restaurant is a 404, never a fallback venue", async () => {
 test("each restaurant's QR points at its own address; unknown restaurants get none", async () => {
   const c = await fetch(`${base}/api/restaurants`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Kano Kitchen", username: "kano", password: "long-enough-pass" }) });
   assert.equal(c.status, 201);
-  await encodes("r=kano-kitchen&table=3", "https://orderqr-omega.vercel.app/r/kano-kitchen/guest?table=3");
+  await encodes("r=kano-kitchen&table=3", "https://chopdesk.propertypadi.com/r/kano-kitchen/guest?table=3");
   assert.equal((await fetch(`${base}/qr?r=ghost-place&table=1`)).status, 404);
 });

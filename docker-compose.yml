@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: orderqr:latest
+    image: chopdesk:latest
     restart: unless-stopped
     depends_on:
       db:

@@ -1,4 +1,4 @@
-# OrderQR: multi-restaurant QR ordering
+# Chopdesk: multi-restaurant QR ordering
 
 Any number of restaurants can use the platform. Each restaurant signs up, gets its
 own address (`/r/<name>`), menu, tables, QR codes and staff logins, and runs its own
@@ -47,7 +47,7 @@ starts empty — there is no demo restaurant and there are no default logins.
 
 The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml). Data lives in **Postgres** (one row per restaurant, JSONB document): the compose file runs a `db` service on the `orderqr-db-data` volume, the app connects via `DATABASE_URL`, and `GET /health` backs the container healthcheck. On first boot an empty database imports the legacy `data/store.json` once (from the kept `orderqr-data` volume); after that Postgres is the source of truth. Without `DATABASE_URL` (local dev, tests, Vercel) the app falls back to the JSON file store.
 
-**Option A — Compose (full setup):** in Dokploy create a **Compose** service from this repo (`docker-compose.yml`), then under **Domains** add your domain for service `app`, port `3000`, HTTPS on. Set the variables from [.env.example](.env.example) in the **Environment** tab — `SESSION_SECRET` and `POSTGRES_PASSWORD` are required (letters/numbers only for the latter; it is embedded in `DATABASE_URL`), and `PUBLIC_BASE_URL` must be your `https://…` domain before printing QR codes. Deploy; check `https://<domain>/health` returns `{"status":"ok"}`.
+**Option A — Compose (full setup):** in Dokploy create a **Compose** service from this repo (`docker-compose.yml`), then under **Domains** add your domain for service `app`, port `3000`, HTTPS on. Set the variables from [.env.example](.env.example) in the **Environment** tab — `SESSION_SECRET` and `POSTGRES_PASSWORD` are required (letters/numbers only for the latter; it is embedded in `DATABASE_URL`), and `PUBLIC_BASE_URL` must be `https://chopdesk.propertypadi.com` before printing QR codes. Deploy; check `https://chopdesk.propertypadi.com/health` returns `{"status":"ok"}`.
 
 **Option B — Application/Dockerfile:** create an **Application**, build type **Dockerfile**, container port `3000`, same env vars plus `DATABASE_URL` pointing at a Postgres you provision (e.g. a Dokploy database service), and mount a volume at `/app/data` if you want the one-time `store.json` import.
 
@@ -55,7 +55,7 @@ The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose
 
 ## Deploy on Vercel
 
-Set `PUBLIC_BASE_URL=https://orderqr-omega.vercel.app` in the Vercel project so table QR codes always encode that production guest URL (the code falls back to the production domain on Vercel, and to the request origin for local/LAN demos).
+Set `PUBLIC_BASE_URL=https://chopdesk.propertypadi.com` in the Vercel project so table QR codes always encode that production guest URL (the code falls back to the production domain on Vercel, and to the request origin for local/LAN demos).
 
 Import the GitHub repo as-is (no build command, no framework preset). `public/`
 is served statically, [vercel.json](vercel.json) maps the `/r/<slug>/...` pages and

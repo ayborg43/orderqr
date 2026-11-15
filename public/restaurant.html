@@ -11,9 +11,9 @@
 <body class="home">
 <header class="n-nav">
   <div class="n-nav__in">
-    <a class="n-logo" href="/" aria-label="OrderQR home">
+    <a class="n-logo" href="/" aria-label="Chopdesk home">
       <span class="n-logo__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg></span>
-      <span>OrderQR<small>QR ordering for restaurants</small></span>
+      <span>Chopdesk<small>QR ordering for restaurants</small></span>
     </a>
   </div>
 </header>
@@ -39,7 +39,7 @@
 <script>
 const { $, esc } = UI;
 UI.info.then((r) => {
-  document.title = r.name + ' · OrderQR';
+  document.title = r.name + ' · Chopdesk';
   $('#name').textContent = r.name;
   $('#kitchenLink').href = '/r/' + r.slug + '/kitchen';
   $('#adminLink').href = '/r/' + r.slug + '/admin';

@@ -547,7 +547,7 @@ export async function appHandler(req, res) {
       if (!Object.prototype.hasOwnProperty.call(store.restaurants, slug)) return notFoundPage(res, "Restaurant");
       const envBase = String(process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
       const publicBase = envBase || (process.env.VERCEL
-        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || "orderqr-omega.vercel.app"}`
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || "chopdesk.propertypadi.com"}`
         : url.origin);
       const target = `${publicBase}/r/${slug}/guest?table=${encodeURIComponent(url.searchParams.get("table") || "")}`;
       try {
@@ -568,5 +568,5 @@ export default appHandler;
 // Local run (`npm start`): long-lived server. On Vercel this file is imported
 // by api/[...path].js as a serverless function instead, so do not listen there.
 if (!process.env.VERCEL) {
-  http.createServer(appHandler).listen(PORT, () => console.log(`OrderQR running at http://localhost:${PORT}`));
+  http.createServer(appHandler).listen(PORT, () => console.log(`Chopdesk running at http://localhost:${PORT}`));
 }
