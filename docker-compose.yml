@@ -8,12 +8,10 @@ services:
       dockerfile: Dockerfile
     image: orderqr:latest
     restart: unless-stopped
+    # No host port mapping: Dokploy's own dashboard uses host :3000, and
+    # Traefik routes the configured domain to this container port directly.
     expose:
       - "3000"
-    ports:
-      # Direct host access for standalone use. On Dokploy, Traefik routes the
-      # domain to port 3000 — remove this mapping if port 3000 is taken.
-      - "${HOST_PORT:-3000}:3000"
     environment:
       NODE_ENV: production
       PORT: "3000"

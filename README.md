@@ -52,7 +52,7 @@ The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose
 
 **Option B — Application/Dockerfile:** create an **Application**, build type **Dockerfile**, container port `3000`, same env vars, and mount a volume at `/app/data` (Dokploy → Advanced → Volumes) so `store.json` persists.
 
-`TRUST_PROXY=1` is set by the image/compose so login/signup throttling sees real guest IPs behind Traefik, not the proxy's. Change the demo logins (`MANAGER_PASSWORD` / `KITCHEN_PASSWORD`) before going live. Local check without Dokploy: `docker compose up -d --build` → http://localhost:3000.
+`TRUST_PROXY=1` is set by the image/compose so login/signup throttling sees real guest IPs behind Traefik, not the proxy's. Change the demo logins (`MANAGER_PASSWORD` / `KITCHEN_PASSWORD`) before going live. Local check without Dokploy: `docker compose up -d --build` then add a temporary `ports: ["3000:3000"]` mapping (omitted by default — Dokploy itself uses host :3000 and routes via Traefik).
 
 ## Deploy on Vercel
 
