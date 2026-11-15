@@ -201,8 +201,11 @@ function requireStaff(req, res, slug, roles) {
   if (roles && !roles.includes(staff.role)) { json(res, 403, { error: "Your staff role cannot do this", code: "FORBIDDEN" }); return null; }
   return staff;
 }
-// Client address: only trust X-Forwarded-For where a platform proxy sets it.
-const clientIp = (req) => (process.env.VERCEL ? String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() : "") || req.socket?.remoteAddress || "?";
+// Client address: only trust X-Forwarded-For where a platform proxy sets it
+// (Vercel, or TRUST_PROXY=1 behind Dokploy/Traefik/nginx). Otherwise a proxy
+// would bucket every guest under one IP for the throttles below.
+const TRUST_PROXY = !!process.env.VERCEL || /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || "");
+const clientIp = (req) => (TRUST_PROXY ? String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() : "") || req.socket?.remoteAddress || "?";
 // Login throttle: 8 failures per IP and restaurant per 5 minutes.
 const loginFails = new Map();
 const failKey = (ip, slug) => `${slug}|${ip}`;
@@ -489,6 +492,7 @@ export async function appHandler(req, res) {
   let url;
   try { url = new URL(req.url, `http://${req.headers.host || "localhost"}`); } catch { res.writeHead(400); return res.end("Bad request"); }
   try {
+    if (url.pathname === "/health" || url.pathname === "/api/health") return json(res, 200, { status: "ok" });
     if (url.pathname === "/qr" || url.pathname === "/api/qr") {
       // QR SVG for a table link, using optional `qrcode` package; falls back to text page.
       // The code must point at the public site a phone can open — never at the

@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+npm-debug.log
+data/store.json
+data/*.tmp
+*.log
+.DS_Store
+.impeccable
+.env
+.env.*
+!.env.example
+tests
+vercel.json

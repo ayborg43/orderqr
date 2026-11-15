@@ -1,0 +1,41 @@
+# Dokploy: create a "Compose" service from this repo, add your domain in the
+# Dokploy UI (service: app, port: 3000), and set the env vars below there.
+# Also works standalone: `docker compose up -d --build` -> http://localhost:3000
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: orderqr:latest
+    restart: unless-stopped
+    expose:
+      - "3000"
+    ports:
+      # Direct host access for standalone use. On Dokploy, Traefik routes the
+      # domain to port 3000 — remove this mapping if port 3000 is taken.
+      - "${HOST_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATA_DIR: /app/data
+      TRUST_PROXY: "1"
+      # Required in production: long random string (Dokploy: generate one).
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in Dokploy environment}
+      # Public URL guests reach, e.g. https://order.example.com (no trailing /).
+      # Table QR codes encode this, so set it before printing any codes.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      MANAGER_USER: ${MANAGER_USER:-admin}
+      MANAGER_PASSWORD: ${MANAGER_PASSWORD:-admin123}
+      KITCHEN_USER: ${KITCHEN_USER:-kitchen}
+      KITCHEN_PASSWORD: ${KITCHEN_PASSWORD:-kitchen123}
+    volumes:
+      - orderqr-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  orderqr-data:
