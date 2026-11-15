@@ -63,6 +63,13 @@ test("a forged session cookie is rejected", async () => {
   assert.equal((await req("GET", `${API}/orders`, { cookie: forged })).status, 401);
 });
 
+test("existing staff can reach a login page from the home page", async () => {
+  const home = await (await fetch(srv.base + "/")).text();
+  assert.match(home, /href="\/login"/, "home page links to /login");
+  assert.equal((await fetch(srv.base + "/login")).status, 200);
+  assert.equal((await fetch(srv.base + "/login?r=" + DEMO)).status, 200);
+});
+
 test("guest surface stays public", async () => {
   assert.equal((await req("GET", `${API}/menu`)).status, 200);
   assert.equal((await req("GET", `${API}/tables`)).status, 200);

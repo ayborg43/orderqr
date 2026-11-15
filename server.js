@@ -522,8 +522,8 @@ async function serveStatic(req, res, url) {
     file = `${rm[2] || "restaurant"}.html`;
   } else {
     file = p === "/" ? "index.html" : p.slice(1);
-    // Only /signup is a bare top-level page; /guest, /kitchen, /admin etc. are gone.
-    if (!path.extname(file)) { if (p !== "/signup") return notFoundPage(res); file += ".html"; }
+    // Only /signup and /login are bare top-level pages; /guest, /kitchen, /admin etc. are gone.
+    if (!path.extname(file)) { if (p !== "/signup" && p !== "/login") return notFoundPage(res); file += ".html"; }
   }
   const full = path.join(PUBLIC_DIR, path.normalize(file));
   if (!full.startsWith(PUBLIC_DIR + path.sep) || !existsSync(full)) return notFoundPage(res);
