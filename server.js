@@ -94,15 +94,61 @@ function ensureDemo() {
   ];
 }
 
+/* Persistence: Postgres when DATABASE_URL is set (Dokploy compose provides
+   it), otherwise the JSON file store (local dev, tests, Vercel). In Postgres
+   each restaurant is one row (slug PK, JSONB document), so saves stay a
+   single upsert per tenant and the existing mutation code is unchanged. */
+const DATABASE_URL = process.env.DATABASE_URL || "";
+let pool = null;
+async function initDb() {
+  const { default: pg } = await import("pg");
+  pool = new pg.Pool({ connectionString: DATABASE_URL, max: 5 });
+  await pool.query(`CREATE TABLE IF NOT EXISTS restaurants (
+    slug TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+}
+async function loadFromDb() {
+  const { rows } = await pool.query("SELECT data FROM restaurants");
+  if (rows.length) return { restaurants: Object.fromEntries(rows.map((r) => [r.data.slug, r.data])) };
+  // First boot on an empty DB: import the legacy JSON store once, if present.
+  if (existsSync(STORE_FILE)) {
+    try {
+      const raw = migrate(JSON.parse(await readFile(STORE_FILE, "utf8")));
+      console.log(`Imported ${Object.keys(raw.restaurants).length} restaurant(s) from ${STORE_FILE} into Postgres`);
+      return raw;
+    } catch (e) { console.error(`Could not import ${STORE_FILE} (${e.message}); starting fresh`); }
+  }
+  return { restaurants: {} };
+}
+async function saveToDb() {
+  const rests = Object.values(store.restaurants);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const rest of rests) {
+      await client.query(
+        "INSERT INTO restaurants (slug, data, updated_at) VALUES ($1, $2, now()) ON CONFLICT (slug) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+        [rest.slug, JSON.stringify(rest)]);
+    }
+    await client.query("DELETE FROM restaurants WHERE slug <> ALL($1)", [rests.map((r) => r.slug)]);
+    await client.query("COMMIT");
+  } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; }
+  finally { client.release(); }
+}
+
 let store;
 async function loadStore() {
-  await mkdir(DATA_DIR, { recursive: true });
-  if (existsSync(STORE_FILE)) {
-    try { store = migrate(JSON.parse(await readFile(STORE_FILE, "utf8"))); }
-    catch (e) {
-      // Never silently discard data: keep the unreadable file next to the new one.
-      const backup = `${STORE_FILE}.corrupt-${Date.now()}`;
-      try { await rename(STORE_FILE, backup); console.error(`store.json unreadable (${e.message}); moved to ${backup}`); } catch {}
+  if (DATABASE_URL) {
+    await initDb();
+    store = await loadFromDb();
+  } else {
+    await mkdir(DATA_DIR, { recursive: true });
+    if (existsSync(STORE_FILE)) {
+      try { store = migrate(JSON.parse(await readFile(STORE_FILE, "utf8"))); }
+      catch (e) {
+        // Never silently discard data: keep the unreadable file next to the new one.
+        const backup = `${STORE_FILE}.corrupt-${Date.now()}`;
+        try { await rename(STORE_FILE, backup); console.error(`store.json unreadable (${e.message}); moved to ${backup}`); } catch {}
+      }
     }
   }
   if (!store) store = { restaurants: {} };
@@ -111,10 +157,12 @@ async function loadStore() {
 }
 let saveChain = Promise.resolve();
 function saveStore() {
-  // Serialized, atomic write (temp file + rename). On serverless the process may
-  // freeze after the response, so writes are awaited rather than debounced.
+  // Serialized writes. On serverless the process may freeze after the
+  // response, so writes are awaited rather than debounced.
   saveChain = saveChain.then(async () => {
+    if (pool) return saveToDb();
     const tmp = `${STORE_FILE}.tmp`;
+    await mkdir(DATA_DIR, { recursive: true });
     await writeFile(tmp, JSON.stringify(store));
     await rename(tmp, STORE_FILE);
   }).catch((e) => console.error("store write failed:", e.message));

@@ -1,6 +1,5 @@
 # Dokploy: create a "Compose" service from this repo, add your domain in the
 # Dokploy UI (service: app, port: 3000), and set the env vars below there.
-# Also works standalone: `docker compose up -d --build` -> http://localhost:3000
 services:
   app:
     build:
@@ -8,6 +7,9 @@ services:
       dockerfile: Dockerfile
     image: orderqr:latest
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     # No host port mapping: Dokploy's own dashboard uses host :3000, and
     # Traefik routes the configured domain to this container port directly.
     expose:
@@ -17,6 +19,9 @@ services:
       PORT: "3000"
       DATA_DIR: /app/data
       TRUST_PROXY: "1"
+      # Postgres (service `db` below). Password: letters/numbers only, since
+      # it is embedded in this URL.
+      DATABASE_URL: postgres://${POSTGRES_USER:-orderqr}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in Dokploy environment}@db:5432/${POSTGRES_DB:-orderqr}
       # Required in production: long random string (Dokploy: generate one).
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in Dokploy environment}
       # Public URL guests reach, e.g. https://order.example.com (no trailing /).
@@ -27,6 +32,8 @@ services:
       KITCHEN_USER: ${KITCHEN_USER:-kitchen}
       KITCHEN_PASSWORD: ${KITCHEN_PASSWORD:-kitchen123}
     volumes:
+      # Kept for one purpose: on first boot an empty DB imports the legacy
+      # store.json from here once. Afterwards Postgres is the source of truth.
       - orderqr-data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
@@ -35,5 +42,21 @@ services:
       start_period: 10s
       retries: 3
 
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orderqr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in Dokploy environment}
+      POSTGRES_DB: ${POSTGRES_DB:-orderqr}
+    volumes:
+      - orderqr-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orderqr} -d ${POSTGRES_DB:-orderqr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   orderqr-data:
+  orderqr-db-data:

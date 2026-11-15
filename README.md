@@ -46,11 +46,11 @@ built-in demo restaurant, **The Corner Table**.
 
 ## Deploy on Dokploy (recommended)
 
-The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml); data survives redeploys on the `orderqr-data` volume, and `GET /health` backs the container healthcheck.
+The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml). Data lives in **Postgres** (one row per restaurant, JSONB document): the compose file runs a `db` service on the `orderqr-db-data` volume, the app connects via `DATABASE_URL`, and `GET /health` backs the container healthcheck. On first boot an empty database imports the legacy `data/store.json` once (from the kept `orderqr-data` volume); after that Postgres is the source of truth. Without `DATABASE_URL` (local dev, tests, Vercel) the app falls back to the JSON file store.
 
-**Option A — Compose (full setup):** in Dokploy create a **Compose** service from this repo (`docker-compose.yml`), then under **Domains** add your domain for service `app`, port `3000`, HTTPS on. Set the variables from [.env.example](.env.example) in the **Environment** tab — `SESSION_SECRET` is required (generate a long random value) and `PUBLIC_BASE_URL` must be your `https://…` domain before printing QR codes. Deploy; check `https://<domain>/health` returns `{"status":"ok"}`.
+**Option A — Compose (full setup):** in Dokploy create a **Compose** service from this repo (`docker-compose.yml`), then under **Domains** add your domain for service `app`, port `3000`, HTTPS on. Set the variables from [.env.example](.env.example) in the **Environment** tab — `SESSION_SECRET` and `POSTGRES_PASSWORD` are required (letters/numbers only for the latter; it is embedded in `DATABASE_URL`), and `PUBLIC_BASE_URL` must be your `https://…` domain before printing QR codes. Deploy; check `https://<domain>/health` returns `{"status":"ok"}`.
 
-**Option B — Application/Dockerfile:** create an **Application**, build type **Dockerfile**, container port `3000`, same env vars, and mount a volume at `/app/data` (Dokploy → Advanced → Volumes) so `store.json` persists.
+**Option B — Application/Dockerfile:** create an **Application**, build type **Dockerfile**, container port `3000`, same env vars plus `DATABASE_URL` pointing at a Postgres you provision (e.g. a Dokploy database service), and mount a volume at `/app/data` if you want the one-time `store.json` import.
 
 `TRUST_PROXY=1` is set by the image/compose so login/signup throttling sees real guest IPs behind Traefik, not the proxy's. Change the demo logins (`MANAGER_PASSWORD` / `KITCHEN_PASSWORD`) before going live. Local check without Dokploy: `docker compose up -d --build` then add a temporary `ports: ["3000:3000"]` mapping (omitted by default — Dokploy itself uses host :3000 and routes via Traefik).
 
