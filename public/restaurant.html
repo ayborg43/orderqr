@@ -30,10 +30,9 @@
     </div>
   </section>
 
-  <section class="hub__card" id="demoBox" hidden aria-labelledby="demoH">
-    <h2 id="demoH">Try a table</h2>
-    <p class="n-sub">This is the public demo restaurant. Pick a table to open the guest menu, then place an order with the demo card.</p>
-    <div class="plaques" id="tables"></div>
+  <section class="hub__card" aria-labelledby="guestH">
+    <h2 id="guestH">Guests</h2>
+    <p class="n-sub">Guests order by scanning the QR code on their table — print the table cards from the admin dashboard.</p>
   </section>
 </main>
 <script src="/ui.js"></script>
@@ -44,14 +43,6 @@ UI.info.then((r) => {
   $('#name').textContent = r.name;
   $('#kitchenLink').href = '/r/' + r.slug + '/kitchen';
   $('#adminLink').href = '/r/' + r.slug + '/admin';
-  if (!r.demo) return;
-  $('#demoBox').hidden = false;
-  UI.api(UI.R('/tables')).then(({ data }) => {
-    $('#tables').innerHTML = (data.tables || []).map((t) => {
-      const m = String(t.label).match(/^(.*\S)\s+(\S+)$/);
-      return `<a class="plaque sm" href="/r/${esc(r.slug)}/guest?table=${encodeURIComponent(t.id)}" aria-label="Open ${esc(t.label)}"><span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : t.label)}</span></a>`;
-    }).join('');
-  });
 });
 </script>
 </body>

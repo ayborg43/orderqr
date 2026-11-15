@@ -2,8 +2,8 @@
 
 Any number of restaurants can use the platform. Each restaurant signs up, gets its
 own address (`/r/<name>`), menu, tables, QR codes and staff logins, and runs its own
-kitchen display and admin dashboard. Guests scan a table code, order and pay (demo
-payments), and orders appear live on that restaurant's kitchen display.
+kitchen display and admin dashboard. Guests scan a table code, place an order, pay
+at the counter, and orders appear live on that restaurant's kitchen display.
 See [SPEC.md](SPEC.md) for scope, flows and acceptance checks.
 
 ## Run
@@ -13,8 +13,8 @@ npm install   # optional: enables QR images for table cards (app works without i
 npm start     # http://localhost:3000
 ```
 
-Open http://localhost:3000 and either **create a restaurant** (`/signup`) or try the
-built-in demo restaurant, **The Corner Table**.
+Open http://localhost:3000 and **create a restaurant** (`/signup`). The platform
+starts empty — there is no demo restaurant and there are no default logins.
 
 | Surface | URL |
 |---|---|
@@ -33,16 +33,15 @@ built-in demo restaurant, **The Corner Table**.
   as salted scrypt hashes. Managers edit the menu (add, edit, remove dishes, mark sold
   out), add or remove tables, rename the restaurant and set surcharges. Kitchen staff
   run orders and assistance requests. A manager can also open the kitchen screen.
-- **Demo restaurant.** `/r/the-corner-table` always exists. Its logins are manager
-  `admin / admin123` and kitchen `kitchen / kitchen123`; override them with
-  `MANAGER_USER` / `MANAGER_PASSWORD` and `KITCHEN_USER` / `KITCHEN_PASSWORD`.
-- **Old links.** `/guest`, `/kitchen` and `/admin` redirect to the demo restaurant, so
-  printed QR codes from the single-restaurant version keep working.
-- Set a strong `SESSION_SECRET` in production. Without it, production generates a random
-  secret at boot (sessions then end on every restart and don't span instances).
-- Demo cards: `4242 4242 4242 4242` approves, `4000 0000 0000 0002` declines. No real money moves.
-- Data persists to `data/store.json` (override the folder with `DATA_DIR`). A store
-  from the single-restaurant version is upgraded in place: it becomes the demo restaurant.
+- **No default accounts.** Every login is created at signup for that restaurant only.
+  The pre-launch demo tenant (`the-corner-table`) is deleted automatically on boot.
+- **Payments.** There is no online payment: orders go to the kitchen marked
+  pay-at-counter, and the guest settles the table bill at the counter.
+- In production (`NODE_ENV=production`) the server refuses to start without
+  `SESSION_SECRET` and `PUBLIC_BASE_URL`.
+- Data persists to Postgres when `DATABASE_URL` is set, otherwise to
+  `data/store.json` (override the folder with `DATA_DIR`). A store from the
+  single-restaurant version is upgraded in place under its own name.
 
 ## Deploy on Dokploy (recommended)
 
@@ -52,7 +51,7 @@ The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose
 
 **Option B — Application/Dockerfile:** create an **Application**, build type **Dockerfile**, container port `3000`, same env vars plus `DATABASE_URL` pointing at a Postgres you provision (e.g. a Dokploy database service), and mount a volume at `/app/data` if you want the one-time `store.json` import.
 
-`TRUST_PROXY=1` is set by the image/compose so login/signup throttling sees real guest IPs behind Traefik, not the proxy's. Change the demo logins (`MANAGER_PASSWORD` / `KITCHEN_PASSWORD`) before going live. Local check without Dokploy: `docker compose up -d --build` then add a temporary `ports: ["3000:3000"]` mapping (omitted by default — Dokploy itself uses host :3000 and routes via Traefik).
+`TRUST_PROXY=1` is set by the image/compose so login/signup throttling sees real guest IPs behind Traefik, not the proxy's. Local check without Dokploy: `docker compose up -d --build` then add a temporary `ports: ["3000:3000"]` mapping (omitted by default — Dokploy itself uses host :3000 and routes via Traefik).
 
 ## Deploy on Vercel
 

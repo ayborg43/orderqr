@@ -8,7 +8,7 @@ let srv, req;
 const login = (username, password) => req("POST", `${API}/auth/login`, { body: { username, password } });
 
 before(async () => {
-  srv = await startServer(3198, { env: { MANAGER_USER: "boss", MANAGER_PASSWORD: "boss-pass", KITCHEN_USER: "cook", KITCHEN_PASSWORD: "cook-pass", SESSION_SECRET: "test-secret" } });
+  srv = await startServer(3198, { env: { SESSION_SECRET: "test-secret" } });
   req = client(srv.base);
 });
 after(() => srv?.stop());
@@ -25,15 +25,15 @@ test("staff endpoints reject anonymous callers", async () => {
 });
 
 test("wrong password is rejected and does not set a session", async () => {
-  const r = await login("boss", "wrong");
+  const r = await login("admin", "wrong");
   assert.equal(r.status, 401);
   assert.ok(!r.cookie.includes(`${COOKIE}=`), "no session cookie on failed login");
 });
 
 test("manager can sign in, is identified, and can use manager endpoints", async () => {
-  const r = await login("boss", "boss-pass");
+  const r = await login("admin", "admin123");
   assert.equal(r.status, 200);
-  assert.equal(r.body.user, "boss");
+  assert.equal(r.body.user, "admin");
   assert.equal(r.body.role, "manager");
   assert.match(r.cookie, new RegExp(`${COOKIE}=`));
   assert.match(r.cookie, /HttpOnly/i);
@@ -48,7 +48,7 @@ test("manager can sign in, is identified, and can use manager endpoints", async 
 });
 
 test("kitchen role can advance orders but cannot change settings, menu or tables", async () => {
-  const r = await login("cook", "cook-pass");
+  const r = await login("kitchen", "kitchen123");
   assert.equal(r.status, 200); assert.equal(r.body.role, "kitchen");
   const cookie = cookieOf(r.cookie);
   assert.equal((await req("GET", `${API}/orders`, { cookie })).status, 200);
@@ -59,7 +59,7 @@ test("kitchen role can advance orders but cannot change settings, menu or tables
 });
 
 test("a forged session cookie is rejected", async () => {
-  const forged = `${COOKIE}=` + Buffer.from(JSON.stringify({ u: "boss", r: "manager", s: DEMO, exp: Date.now() + 1e6 })).toString("base64url") + ".forgedsignature";
+  const forged = `${COOKIE}=` + Buffer.from(JSON.stringify({ u: "admin", r: "manager", s: DEMO, exp: Date.now() + 1e6 })).toString("base64url") + ".forgedsignature";
   assert.equal((await req("GET", `${API}/orders`, { cookie: forged })).status, 401);
 });
 
@@ -67,6 +67,6 @@ test("guest surface stays public", async () => {
   assert.equal((await req("GET", `${API}/menu`)).status, 200);
   assert.equal((await req("GET", `${API}/tables`)).status, 200);
   assert.equal((await req("GET", `${API}/orders?table=5`)).status, 200);
-  const order = await req("POST", `${API}/orders`, { body: { tableId: "5", idempotencyKey: "auth-test-" + Date.now(), payment: { cardNumber: "4242 4242 4242 4242" }, items: [{ menuItemId: "fries", qty: 1 }] } });
+  const order = await req("POST", `${API}/orders`, { body: { tableId: "5", idempotencyKey: "auth-test-" + Date.now(), items: [{ menuItemId: "fries", qty: 1 }] } });
   assert.equal(order.status, 201);
 });

@@ -14,7 +14,7 @@
 <header class="g-head">
   <div class="g-head__in">
     <div class="g-top">
-      <div class="g-brand"><span id="restName"></span><small>Order &amp; pay from your seat</small></div>
+      <div class="g-brand"><span id="restName"></span><small>Order from your seat, pay at the counter</small></div>
       <button class="btn small" id="callStaff" type="button"><span id="bellIc"></span>Call staff</button>
     </div>
     <div class="g-table">
@@ -48,7 +48,7 @@
   </div>
   <div class="row" style="gap:8px;flex-wrap:nowrap">
     <button class="btn ghost small" type="button" id="viewBill">Bill</button>
-    <button class="btn yolk" type="button" id="checkoutBtn">Review &amp; pay</button>
+    <button class="btn yolk" type="button" id="checkoutBtn">Review &amp; order</button>
   </div>
 </div>
 
@@ -58,22 +58,14 @@
   <div class="sheet__strip glaze glaze-mains"></div>
   <button type="button" class="sheet__close" aria-label="Close" data-close id="payX"></button>
   <div class="sheet__body">
-    <h3 class="sheet__title" id="payTitle">Review &amp; pay</h3>
+    <h3 class="sheet__title" id="payTitle">Review &amp; place order</h3>
     <div id="payBody"></div>
-    <div class="paycard">
-      <div class="paycard__top"><span>Demo card</span><span class="paycard__stamp">No real money</span></div>
-      <label for="card">Card number</label>
-      <input type="tel" id="card" value="4242 4242 4242 4242" autocomplete="off" inputmode="numeric" maxlength="23">
-      <div class="quickfill">
-        <button type="button" data-card="4242 4242 4242 4242">Use approving card</button>
-        <button type="button" data-card="4000 0000 0000 0002">Use declining card</button>
-      </div>
-    </div>
+    <p class="muted">Pay at the counter when you're ready — your order goes to the kitchen straight away.</p>
     <div id="payAlert"></div>
   </div>
   <div class="sheet__foot">
     <button class="btn secondary lg" type="button" id="payCancel">Back</button>
-    <button class="btn lg block" type="button" id="payNow">Pay now</button>
+    <button class="btn lg block" type="button" id="payNow">Place order</button>
   </div>
 </dialog>
 
@@ -116,7 +108,7 @@ async function load() {
     $('#callStaff').hidden = true; return;
   }
   tableLabel = table.label; setPlaque(table.label);
-  $('#tableLabel').textContent = 'Browse, order and pay from your phone. No app needed.';
+  $('#tableLabel').textContent = 'Browse and order from your phone, pay at the counter. No app needed.';
   await loadMenu(); renderCart(); loadOrders();
 }
 async function loadMenu() {
@@ -238,7 +230,7 @@ async function openPay() {
     <li class="quiet"><span>Subtotal</span><span class="amt">${fmt(data.subtotal)}</span></li>
     ${data.surcharges.map(s => `<li class="quiet"><span>${esc(s.name)}</span><span class="amt">${fmt(s.amount)}</span></li>`).join('')}
     <li class="total"><span>Total</span><span class="amt">${fmt(data.total)}</span></li></ul>`;
-  $('#payNow').innerHTML = `${icon('card')}Pay ${fmt(data.total)}`;
+  $('#payNow').innerHTML = `Place order · ${fmt(data.total)}`;
   if (!$('#payDlg').open) $('#payDlg').showModal();
 }
 $('#checkoutBtn').onclick = openPay;
@@ -248,21 +240,19 @@ $('#payBody').addEventListener('click', e => {
   if (!cart.length) $('#payDlg').close(); else openPay();
 });
 $('#payCancel').onclick = () => $('#payDlg').close();
-$('#card').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 19).replace(/(.{4})/g, '$1 ').trim(); });
-$$('[data-card]').forEach(b => b.onclick = () => { $('#card').value = b.dataset.card; });
 $('#payNow').onclick = async () => {
   if (!idemKey) idemKey = 'guest-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-  const btn = $('#payNow'); btn.disabled = true; const label = btn.innerHTML; btn.textContent = 'Processing…';
-  const { ok, data } = await send(UI.R('/orders'), 'POST', { tableId, items: cart, idempotencyKey: idemKey, payment: { cardNumber: $('#card').value } });
+  const btn = $('#payNow'); btn.disabled = true; const label = btn.innerHTML; btn.textContent = 'Sending…';
+  const { ok, data } = await send(UI.R('/orders'), 'POST', { tableId, items: cart, idempotencyKey: idemKey });
   btn.disabled = false; btn.innerHTML = label;
-  if (!ok) { $('#payAlert').innerHTML = `<div class="inline-err" role="alert">${icon('alert')}<span>${esc(data.error || 'Payment failed')}</span></div>`; idemKey = null; return; }
+  if (!ok) { $('#payAlert').innerHTML = `<div class="inline-err" role="alert">${icon('alert')}<span>${esc(data.error || 'Could not place your order')}</span></div>`; idemKey = null; return; }
   cart = []; saveCart(); renderCart(); $('#payDlg').close();
-  toast(`<strong>Order ${esc(data.order.id)} confirmed</strong><br>${esc(data.order.tableLabel)} · ${fmt(data.order.total)} · demo card •••• ${esc(data.order.payment.last4)}. The kitchen has it — follow along below, and order more any time.`, 'ok');
+  toast(`<strong>Order ${esc(data.order.id)} confirmed</strong><br>${esc(data.order.tableLabel)} · ${fmt(data.order.total)} · pay at the counter. The kitchen has it — follow along below, and order more any time.`, 'ok');
   await loadOrders(); $('#myOrders').scrollIntoView({ behavior: 'smooth', block: 'start' });
 };
 
 /* ---------- orders & bill ---------- */
-const paidOrders = async () => { const { data } = await UI.api(UI.R('/orders?table=') + encodeURIComponent(tableId)); return (data.orders || []).filter(o => o.payment.state === 'paid-demo'); };
+const tableOrders = async () => { const { data } = await UI.api(UI.R('/orders?table=') + encodeURIComponent(tableId)); return data.orders || []; };
 function orderCard(o) {
   const idx = STEPS.indexOf(o.status);
   const cancelled = o.status === 'Cancelled';
@@ -273,7 +263,7 @@ function orderCard(o) {
 }
 async function loadOrders() {
   if (!tableId) return;
-  const paid = await paidOrders();
+  const paid = await tableOrders();
   for (const o of paid) {
     if (seenStatus[o.id] && seenStatus[o.id] !== o.status && o.status === 'Ready') toast(`<strong>Order ${esc(o.id)} is ready</strong><br>It’s on its way to your table.`, 'ok');
     seenStatus[o.id] = o.status;
@@ -281,13 +271,13 @@ async function loadOrders() {
   $('#myOrders').innerHTML = paid.length ? `<h2>Your orders at this table</h2>` + paid.slice().reverse().map(orderCard).join('') : '';
 }
 $('#viewBill').onclick = async () => {
-  const paid = (await paidOrders()).filter(o => o.status !== 'Cancelled');
+  const paid = (await tableOrders()).filter(o => o.status !== 'Cancelled');
   const total = paid.reduce((s, o) => s + o.total, 0);
   $('#billBody').innerHTML = paid.length
     ? `<ul class="ledger">${paid.map(o => `<li><span><strong>${esc(o.id)}</strong> <span class="badge ${esc(o.status)}" style="margin-left:6px">${esc(o.status)}</span><span class="sub">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join(', ')}</span></span><span class="amt">${fmt(o.total)}</span></li>`).join('')}
        <li class="total"><span>Bill total</span><span class="amt">${fmt(total)}</span></li></ul>
-       <p class="muted" style="margin-top:12px">Demo bill. In production this is where pay-and-leave or split bill would complete.</p>`
-    : '<p class="muted" style="margin-top:12px">No paid orders yet at this table.</p>';
+       <p class="muted" style="margin-top:12px">Pay this total at the counter when you're ready to leave.</p>`
+    : '<p class="muted" style="margin-top:12px">No orders yet at this table.</p>';
   $('#billDlg').showModal();
 };
 $('#billClose').onclick = () => $('#billDlg').close();

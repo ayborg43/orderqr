@@ -44,12 +44,12 @@ before(async () => {
 after(() => srv?.stop());
 
 test("table QR encodes the canonical production guest URL (https, not request host)", async () => {
-  await encodes("r=the-corner-table&table=5", "https://orderqr-omega.vercel.app/r/the-corner-table/guest?table=5");
-  await encodes("r=the-corner-table&table=12", "https://orderqr-omega.vercel.app/r/the-corner-table/guest?table=12");
+  await encodes("r=test-restaurant&table=5", "https://orderqr-omega.vercel.app/r/test-restaurant/guest?table=5");
+  await encodes("r=test-restaurant&table=12", "https://orderqr-omega.vercel.app/r/test-restaurant/guest?table=12");
 });
 
-test("a QR without a restaurant falls back to the demo restaurant", async () => {
-  await encodes("table=5", "https://orderqr-omega.vercel.app/r/the-corner-table/guest?table=5");
+test("a QR without a restaurant is a 404, never a fallback venue", async () => {
+  assert.equal((await fetch(`${base}/qr?table=5`)).status, 404);
 });
 
 test("each restaurant's QR points at its own address; unknown restaurants get none", async () => {

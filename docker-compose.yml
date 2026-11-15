@@ -27,10 +27,6 @@ services:
       # Public URL guests reach, e.g. https://order.example.com (no trailing /).
       # Table QR codes encode this, so set it before printing any codes.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
-      MANAGER_USER: ${MANAGER_USER:-admin}
-      MANAGER_PASSWORD: ${MANAGER_PASSWORD:-admin123}
-      KITCHEN_USER: ${KITCHEN_USER:-kitchen}
-      KITCHEN_PASSWORD: ${KITCHEN_PASSWORD:-kitchen123}
     volumes:
       # Kept for one purpose: on first boot an empty DB imports the legacy
       # store.json from here once. Afterwards Postgres is the source of truth.

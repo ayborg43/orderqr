@@ -11,7 +11,7 @@ test("orders persist in Postgres and survive a restart on the same DB", { skip: 
   try {
     const api = client(s1.base);
     const placed = await api("POST", `/api/r/${DEMO}/orders`, {
-      body: { tableId: "5", idempotencyKey: "db-test-1", items: [{ menuItemId: "fries", qty: 1, modifiers: [] }], payment: { cardNumber: "4242 4242 4242 4242" } },
+      body: { tableId: "5", idempotencyKey: "db-test-1", items: [{ menuItemId: "fries", qty: 1, modifiers: [] }] },
     });
     assert.equal(placed.status, 201);
   } finally { s1.stop(); }

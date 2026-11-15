@@ -4,7 +4,7 @@
 
 - **Multiple restaurants** on one platform (multi-tenant), each a single location, dine-in only for v1.
   Every restaurant has its own address, menu, tables, orders, settings and staff logins (see §4a).
-- **Demo payment only** — no real gateway, no real money. Demo cards simulate approve/decline.
+- **Pay at counter** — no payment gateway. Orders go to the kitchen immediately; guests settle the table bill at the counter.
 - References: Nomni QR ordering (guest experience) + LynnC table-to-kitchen guide (operations).
 
 Out of scope for v1: real payments (Stripe etc.), third-party POS, kitchen printers,
@@ -19,13 +19,13 @@ multi-branch, loyalty, delivery/takeaway, native apps. Each is a later phase (§
 | Admin dashboard | Manager / front-of-house | `/r/<slug>/admin` |
 | Restaurant overview | Anyone | `/r/<slug>` |
 | Sign-up | Restaurant owner | `/signup` |
-| Landing | Anyone | `/` explains the platform, links to sign-up and the demo restaurant |
+| Landing | Anyone | `/` explains the platform and links to sign-up |
 
 ## 3. Core flow
 
 ```
 Table QR scan → menu (branch menu) → item + modifiers → basket review
-→ re-validate availability → demo payment → order confirmed (order no.)
+→ re-validate availability → order placed (pay at counter) → order confirmed (order no.)
 → kitchen stations (KDS) → status updates → guest sees progress → served
 → guest may order again on same table session → bill view (orders total)
 ```
@@ -41,8 +41,7 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - G5. Basket shows quantities, modifiers, line totals, subtotal, surcharges, total.
 - G6. On submit, availability is **re-checked server-side**; a newly sold-out item is flagged, not ordered.
 - G7. Duplicate submit (double-tap / retry) with same idempotency key returns the same order — no duplicate.
-- G8. Demo checkout: card form; `4242 4242 4242 4242` approves, `4000 0000 0000 0002` declines.
-  Declined payment keeps the order out of the kitchen and explains why.
+- G8. Checkout is pay-at-counter: no card is taken, every accepted order goes straight to the kitchen marked pay-at-counter.
 - G9. Confirmation shows order number + live status (Received → Preparing → Ready → Served).
 - G10. Same table can place follow-up orders; guest can view the table's bill (all orders + total).
 - G11. "Call staff" button records an assistance request visible to staff surfaces.
@@ -66,14 +65,14 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - M4. Managers add, edit, remove and mark-sold-out dishes, add or remove tables, rename the restaurant and set surcharges. Kitchen staff cannot.
 - M5. Each table QR code encodes `<public base>/r/<slug>/guest?table=<id>`; unknown restaurants return 404.
 - M6. Passwords are stored as salted scrypt hashes; sign-up is rate limited per address; logins are throttled per address and restaurant.
-- M7. A demo restaurant (`the-corner-table`) always exists. Old single-restaurant URLs and stores keep working.
+- M7. The platform starts empty; the first restaurant is created via sign-up. A legacy single-restaurant store is upgraded under its own name, and the pre-launch demo tenant (`the-corner-table`) is deleted on boot.
 
 ## 5. Non-functional
 
 - N1. Works on mobile browsers, no install, no guest account.
 - N2. Every order keeps: id, table, items+modifiers, amounts, payment state, timestamps, status history (audit).
 - N3. Failed kitchen/admin connection must surface an error, never silently drop an order (orders persist to disk).
-- N4. Single-process demo deployment; data in `data/store.json` (created on first run, seeded menu).
+- N4. Single-process deployment; data in Postgres via `DATABASE_URL`, or `data/store.json` when no database is configured.
 
 ## 6. Tech (chosen for zero-friction demo)
 
@@ -94,9 +93,8 @@ API: public and staff routes live under `/api/r/<slug>/...`; `POST /api/restaura
 2. Real payment gateway + refunds / split bill; a per-restaurant currency. 3. Named POS integration + ESC/POS printers.
 4. Multi-branch per restaurant; modifier-group editing in admin. 5. Loyalty, takeaway/delivery, PWA venue app. 6. Arabic/English i18n + RTL.
 
-## 8. Acceptance checks (demo script)
+## 8. Acceptance checks
 
-Scan Table 5 → order burger (medium, +extra cheese, note "no onion") + drink → pay approved card →
+Sign up a restaurant → scan Table 5 → order burger (medium, +extra cheese, note "no onion") + drink → place order (pay at counter) →
 order appears on KDS under correct stations → advance to Ready → guest sees Ready → order again (dessert) →
-admin marks drink sold-out → guest can no longer add it → pay with decline card → no kitchen ticket, clear message →
-double-submit same checkout → only one order. Automated equivalent: `npm test`.
+admin marks drink sold-out → guest can no longer add it → double-submit same checkout → only one order. Automated equivalent: `npm test`.

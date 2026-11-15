@@ -35,7 +35,7 @@ function ago(m) { return m < 60 ? m + ' min' : m < 1440 ? Math.floor(m / 60) + '
 async function load() {
   const { status, data: d } = await api(UI.R('/orders'));
   if (status === 401) return location.reload();
-  orders = (d.orders || []).filter(o => o.payment.state === 'paid-demo' && o.status !== 'Served' && o.status !== 'Cancelled')
+  orders = (d.orders || []).filter(o => o.status !== 'Served' && o.status !== 'Cancelled')
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   render();
   const { data: a } = await api(UI.R('/assist')); const reqs = a.requests || [];

@@ -9,7 +9,6 @@ const signup = (body) => req("POST", "/api/restaurants", { body });
 const A = { name: "Lagos Grill House", username: "ayo", password: "correct-horse-1", kitchenPassword: "kitchen-pass-1", tables: 4 };
 const B = { name: "Abuja Suya Spot", username: "bola", password: "battery-staple-2", tables: 6, sampleMenu: false };
 let ckA, ckB, ckKitchenA;
-const card = { cardNumber: "4242 4242 4242 4242" };
 
 before(async () => {
   srv = await startServer(3196);
@@ -56,7 +55,6 @@ test("passwords are stored hashed, never in plain text", () => {
 test("a manager session only works for its own restaurant", async () => {
   assert.equal((await req("GET", "/api/r/lagos-grill-house/orders", { cookie: ckA })).status, 200);
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/orders", { cookie: ckA })).status, 401, "A's cookie must not open B");
-  assert.equal((await req("GET", `/api/r/${DEMO}/orders`, { cookie: ckA })).status, 401, "A's cookie must not open the demo");
   assert.equal((await req("GET", "/api/r/lagos-grill-house/orders", { cookie: ckB })).status, 401, "B's cookie must not open A");
   // Re-labelling a cookie for another restaurant fails: the slug is signed into the session.
   const relabelled = ckA.replace("qr_staff_lagos-grill-house", "qr_staff_abuja-suya-spot");
@@ -66,21 +64,21 @@ test("a manager session only works for its own restaurant", async () => {
 });
 
 test("orders, tickets and assist requests stay inside their restaurant", async () => {
-  const o = await req("POST", "/api/r/lagos-grill-house/orders", { body: { tableId: "2", idempotencyKey: "iso-1", payment: card, items: [{ menuItemId: "fries", qty: 2 }] } });
+  const o = await req("POST", "/api/r/lagos-grill-house/orders", { body: { tableId: "2", idempotencyKey: "iso-1", items: [{ menuItemId: "fries", qty: 2 }] } });
   assert.equal(o.status, 201);
   assert.equal(o.body.order.id, "ORD-1001", "order numbers start at 1001 per restaurant");
   assert.equal((await req("GET", "/api/r/lagos-grill-house/orders", { cookie: ckA })).body.orders.length, 1);
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/orders", { cookie: ckB })).body.orders.length, 0);
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/orders/ORD-1001")).status, 404, "B cannot read A's order");
   // The same idempotency key in another restaurant is a different order.
-  const o2 = await req("POST", `/api/r/${DEMO}/orders`, { body: { tableId: "2", idempotencyKey: "iso-1", payment: card, items: [{ menuItemId: "fries", qty: 1 }] } });
-  assert.equal(o2.status, 201); assert.notEqual(o2.body.duplicate, true);
+  const o2 = await req("POST", `/api/r/${DEMO}/orders`, { body: { tableId: "2", idempotencyKey: "iso-1", items: [{ menuItemId: "fries", qty: 1 }] } });
+  assert.equal(o2.status, 201); assert.notEqual(o2.body.duplicate, true); // test-restaurant is a third tenant
   // Assist
   assert.equal((await req("POST", "/api/r/lagos-grill-house/assist", { body: { tableId: "1" } })).status, 201);
   assert.equal((await req("GET", "/api/r/lagos-grill-house/assist", { cookie: ckA })).body.requests.length, 1);
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/assist", { cookie: ckB })).body.requests.length, 0);
   // B's table ids come from B's own list.
-  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { tableId: "5", payment: card, items: [{ menuItemId: "fries", qty: 1 }] } })).status, 400, "B has no menu, so no item can be ordered");
+  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { tableId: "5", items: [{ menuItemId: "fries", qty: 1 }] } })).status, 400, "B has no menu, so no item can be ordered");
 });
 
 test("managers edit their own menu, and other restaurants never see it", async () => {
@@ -90,8 +88,8 @@ test("managers edit their own menu, and other restaurants never see it", async (
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/menu")).body.items.length, 1);
   assert.ok(!(await req("GET", "/api/r/lagos-grill-house/menu")).body.items.some((i) => i.id === "beef-suya"));
   // A guest can order B's dish at B only.
-  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { tableId: "5", payment: card, items: [{ menuItemId: "beef-suya", qty: 2 }] } })).status, 201);
-  assert.equal((await req("POST", "/api/r/lagos-grill-house/orders", { body: { tableId: "1", payment: card, items: [{ menuItemId: "beef-suya", qty: 1 }] } })).status, 400);
+  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { tableId: "5", items: [{ menuItemId: "beef-suya", qty: 2 }] } })).status, 201);
+  assert.equal((await req("POST", "/api/r/lagos-grill-house/orders", { body: { tableId: "1", items: [{ menuItemId: "beef-suya", qty: 1 }] } })).status, 400);
   // Edit and delete
   assert.equal((await req("PATCH", "/api/r/abuja-suya-spot/menu/beef-suya", { cookie: ckB, body: { price: 4000, name: "Beef Suya (large)" } })).body.item.price, 4000);
   const dup = await req("POST", "/api/r/abuja-suya-spot/menu", { cookie: ckB, body: { name: "Beef Suya", price: 100, category: "Mains", station: "Grill" } });
@@ -142,29 +140,39 @@ test("unknown restaurants return 404 and pages are routed per restaurant", async
   for (const [p, status] of [["/r/lagos-grill-house", 200], ["/r/lagos-grill-house/guest", 200], ["/r/lagos-grill-house/kitchen", 200], ["/r/lagos-grill-house/admin", 200], ["/r/nope", 404], ["/r/nope/admin", 404], ["/signup", 200]]) {
     assert.equal((await fetch(srv.base + p)).status, status, p);
   }
-  const old = await req("GET", "/guest?table=3");
-  assert.equal(old.status, 302);
-  assert.equal(old.location, `/r/${DEMO}/guest?table=3`);
+  assert.equal((await fetch(srv.base + "/guest?table=3")).status, 404, "pre-tenancy links are gone, not redirected");
 });
 
 test("signups are rate limited per address", async () => {
-  // Two restaurants were created above; five per hour are allowed.
-  for (let i = 0; i < 3; i++) assert.equal((await signup({ name: `Bulk Place ${i}`, username: "bulk", password: "bulk-password-1" })).status, 201);
+  // Helper bootstrap + A + B already created three; five per hour are allowed.
+  for (let i = 0; i < 2; i++) assert.equal((await signup({ name: `Bulk Place ${i}`, username: "bulk", password: "bulk-password-1" })).status, 201);
   assert.equal((await signup({ name: "One Too Many", username: "bulk", password: "bulk-password-1" })).status, 429);
 });
 
-test("the platform starts with the demo restaurant and upgrades a single-restaurant store", async () => {
+test("the legacy demo tenant is deleted on boot and never recreated", async () => {
+  const tenant = (slug, name) => ({ slug, name, createdAt: new Date().toISOString(), tables: [{ id: "1", label: "Table 1" }], menu: [], orders: [], assistRequests: [], settings: { cardSurchargePct: 0, holidaySurchargePct: 10, holidayMode: false }, seq: 1000, staff: [] });
+  const s3 = await startServer(3194, { store: { restaurants: { "the-corner-table": tenant("the-corner-table", "The Corner Table"), "real-place": tenant("real-place", "Real Place") } } });
+  try {
+    const c3 = client(s3.base);
+    assert.equal((await c3("GET", "/api/r/the-corner-table/")).status, 404, "demo tenant removed");
+    assert.equal((await c3("GET", "/api/r/real-place/")).status, 200, "real restaurants untouched");
+    assert.equal((await fetch(s3.base + "/r/the-corner-table")).status, 404);
+  } finally { s3.stop(); }
+});
+
+test("the platform starts empty and upgrades a single-restaurant store under its own name", async () => {
   const legacy = { tables: [{ id: "1", label: "Table 1" }], menu: [{ id: "tea", name: "Tea", desc: "", price: 5, category: "Drinks", station: "Drinks", dietary: [], available: true, modifierGroups: [] }],
-    orders: [{ id: "ORD-1001", tableId: "1", tableLabel: "Table 1", items: [], subtotal: 5, surcharges: [], total: 5, status: "Received", payment: { state: "paid-demo", last4: "4242" }, createdAt: new Date().toISOString(), history: [] }],
+    orders: [{ id: "ORD-1001", tableId: "1", tableLabel: "Table 1", items: [], subtotal: 5, surcharges: [], total: 5, status: "Received", payment: { state: "pay-at-counter" }, createdAt: new Date().toISOString(), history: [] }],
     assistRequests: [], settings: { cardSurchargePct: 0, holidaySurchargePct: 10, holidayMode: false, restaurantName: "Old Name" }, seq: 1001 };
   const s2 = await startServer(3195, { store: legacy });
   try {
     const c2 = client(s2.base);
-    const info = await c2("GET", `/api/r/${DEMO}/`);
-    assert.equal(info.body.name, "Old Name"); assert.equal(info.body.demo, true);
-    assert.equal((await c2("GET", `/api/r/${DEMO}/menu`)).body.items[0].id, "tea");
-    const login = await c2("POST", `/api/r/${DEMO}/auth/login`, { body: { username: "admin", password: "admin123" } });
-    assert.equal(login.status, 200);
-    assert.equal((await c2("GET", `/api/r/${DEMO}/orders`, { cookie: cookieOf(login.cookie) })).body.orders.length, 1, "existing orders survive the upgrade");
+    // The legacy restaurant keeps its name as its slug; it has no staff until signup-era data exists.
+    const info = await c2("GET", "/api/r/old-name/");
+    assert.equal(info.body.name, "Old Name"); assert.equal(info.body.demo, undefined);
+    assert.equal((await c2("GET", "/api/r/old-name/menu")).body.items[0].id, "tea");
+    assert.equal((await c2("GET", "/api/r/old-name/orders?table=1")).body.orders.length, 1, "existing orders survive the upgrade");
+    // The old demo tenant is removed on boot, and the platform otherwise starts empty.
+    assert.equal((await c2("GET", "/api/r/the-corner-table/")).status, 404);
   } finally { s2.stop(); }
 });

@@ -57,7 +57,7 @@
   /* --- Multi-restaurant: pages live under /r/<slug>/..., the API under /api/r/<slug>/... --- */
   const rid = (location.pathname.match(/^\/r\/([a-z0-9-]+)/) || [])[1] || null;
   const R = (p = '') => '/api/r/' + rid + p;
-  // Resolves to { slug, name, demo }; swaps the page for a "not found" panel when the address is wrong.
+  // Resolves to { slug, name }; swaps the page for a "not found" panel when the address is wrong.
   const info = rid ? api(R('/')).then(({ ok, data }) => {
     if (!ok) {
       document.title = 'Restaurant not found';
@@ -96,8 +96,7 @@
         ${wrongRole ? '<button class="btn block" type="button" id="authSwitch">Sign in as someone else</button>' : `<label class="field"><span>Username</span><input type="text" id="authUser" autocomplete="username" required></label>
         <label class="field"><span>Password</span><input type="password" id="authPass" autocomplete="current-password" required></label>
         <p class="auth-card__err" id="authErr" role="alert"></p>
-        <button class="btn block lg" type="submit">Sign in</button>
-        ${rest?.demo ? '<p class="auth-card__hint">Demo accounts — manager: <b>admin / admin123</b> · kitchen: <b>kitchen / kitchen123</b></p>' : ''}`}
+        <button class="btn block lg" type="submit">Sign in</button>`}
         <a class="auth-card__home" href="/">← Back to home</a></form>`;
       if (wrongRole) {
         $('#authSwitch', gate).onclick = async () => { await send(R('/auth/logout'), 'POST'); location.reload(); };

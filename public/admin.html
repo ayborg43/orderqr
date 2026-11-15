@@ -90,7 +90,7 @@ function renderOrders() {
       <td data-label="Table"><strong>${esc(o.tableLabel)}</strong></td>
       <td data-label="Items" class="items">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join('<br>')}</td>
       <td data-label="Total" class="num">${fmt(o.total)}</td>
-      <td data-label="Payment">${o.payment.state === 'paid-demo' ? 'Demo paid •••• ' + esc(o.payment.last4) : '<span class="badge Cancelled">Declined</span>'}</td>
+      <td data-label="Payment">Pay at counter</td>
       <td data-label="Status"><span class="badge ${esc(o.status)}">${esc(LABEL[o.status] || o.status)}</span></td></tr>`).join('')}</tbody></table>${full.length > list.length ? `<div class="more-orders"><button class="btn secondary" type="button" id="moreOrders">Show all ${full.length} orders</button></div>` : ''}`
     : `<div class="empty-row">${allOrders.length ? 'No orders with this status.' : 'No orders yet. Place one as a guest and it will show up here.'}</div>`;
 }

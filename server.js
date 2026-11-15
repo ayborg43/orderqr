@@ -13,10 +13,9 @@ const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? "/tmp/orderqr-dat
 const STORE_FILE = path.join(DATA_DIR, "store.json");
 
 /* Multi-restaurant platform. Every restaurant ("tenant") lives under its own
-   slug and owns its menu, tables, orders, settings and staff logins. The demo
-   restaurant below always exists so the landing page has something to try. */
-const DEMO_SLUG = "the-corner-table";
-const DEMO_NAME = "The Corner Table";
+   slug and owns its menu, tables, orders, settings and staff logins. The
+   platform starts empty: the first restaurant is created via /signup. */
+const LEGACY_DEMO_SLUG = "the-corner-table"; // pre-production demo tenant, removed on boot
 const STATIONS = ["Grill", "Kitchen", "Drinks", "Dessert"];
 const DIETARY = ["vegan", "vegetarian", "gluten-free", "spicy"];
 const RESERVED_SLUGS = new Set(["api", "r", "signup", "guest", "kitchen", "admin", "qr", "fonts", "app", "ui", "index", "www", "static", "assets", "login", "restaurant", "restaurants", "health", "status", "help", "support"]);
@@ -72,26 +71,17 @@ function checkPassword(pw, stored) {
 const DUMMY_HASH = hashPassword("not-a-real-password"); // keeps unknown-user logins as slow as real ones
 
 /* --- Store: one JSON document { restaurants: { [slug]: restaurant } } --- */
-const MANAGER = { username: process.env.MANAGER_USER || "admin", password: process.env.MANAGER_PASSWORD || "admin123" };
-const KITCHEN = { username: process.env.KITCHEN_USER || "kitchen", password: process.env.KITCHEN_PASSWORD || "kitchen123" };
-
 function migrate(raw) {
   if (raw && raw.restaurants) return raw;
-  // v1 stored a single restaurant at the top level; it becomes the demo tenant.
+  // v1 stored a single restaurant at the top level; it keeps its own name/slug.
   const { restaurantName, ...settings } = raw?.settings || {};
-  return { restaurants: { [DEMO_SLUG]: {
-    slug: DEMO_SLUG, name: restaurantName || DEMO_NAME, createdAt: new Date().toISOString(),
+  const name = restaurantName || "Restaurant";
+  const slug = slugify(name) || "restaurant";
+  return { restaurants: { [slug]: {
+    slug, name, createdAt: new Date().toISOString(),
     tables: raw?.tables || makeTables(12), menu: raw?.menu || clone(seedMenu), orders: raw?.orders || [],
     assistRequests: raw?.assistRequests || [], settings: { ...defaultSettings(), ...settings }, seq: raw?.seq || 1000, staff: [],
   } } };
-}
-function ensureDemo() {
-  const demo = store.restaurants[DEMO_SLUG] || (store.restaurants[DEMO_SLUG] = newRestaurant({ slug: DEMO_SLUG, name: DEMO_NAME, tables: 12 }));
-  // The public demo's logins follow the environment (defaults only for local use).
-  demo.staff = [
-    { username: MANAGER.username, role: "manager", hash: hashPassword(MANAGER.password) },
-    { username: KITCHEN.username, role: "kitchen", hash: hashPassword(KITCHEN.password) },
-  ];
 }
 
 /* Persistence: Postgres when DATABASE_URL is set (Dokploy compose provides
@@ -152,7 +142,11 @@ async function loadStore() {
     }
   }
   if (!store) store = { restaurants: {} };
-  ensureDemo();
+  // Production cleanup: the pre-launch demo tenant is deleted, never recreated.
+  if (store.restaurants[LEGACY_DEMO_SLUG]) {
+    delete store.restaurants[LEGACY_DEMO_SLUG];
+    console.log(`Removed legacy demo restaurant (${LEGACY_DEMO_SLUG})`);
+  }
   await saveStore();
 }
 let saveChain = Promise.resolve();
@@ -207,18 +201,22 @@ function priceOrder(rest, rawItems) {
   return { items, subtotal, surcharges, total };
 }
 
-function demoPay(cardNumber) {
-  const num = String(cardNumber || "").replace(/\D/g, "");
-  if (num === "4000000000000002") return { ok: false, reason: "Card declined (demo). Order was not sent to the kitchen — try 4242 4242 4242 4242." };
-  if (num.length < 12) return { ok: false, reason: "Enter a demo card: 4242 4242 4242 4242 approves, 4000 0000 0000 0002 declines." };
-  return { ok: true, last4: num.slice(-4) };
-}
+/* No online payments: guests order from the table and pay at the counter.
+   Every accepted order goes straight to the kitchen marked pay-at-counter. */
 
 /* --- Staff authentication ---------------------------------------------------
    Signed, stateless session cookie (HMAC) per restaurant, so it works on
    serverless too and a login for one restaurant never opens another. In
    production without SESSION_SECRET a random secret is generated at boot, so
    cookies cannot be forged (they just expire on restart). */
+/* Fail fast on weak production config (long-lived servers; Vercel keeps the
+   boot-time random secret fallback since it is configured per deployment). */
+if (IS_PROD && !process.env.VERCEL) {
+  const missing = [];
+  if (!process.env.SESSION_SECRET) missing.push("SESSION_SECRET");
+  if (!process.env.PUBLIC_BASE_URL) missing.push("PUBLIC_BASE_URL");
+  if (missing.length) { console.error(`Refusing to start in production: missing ${missing.join(", ")}`); process.exit(1); }
+}
 const SESSION_SECRET = process.env.SESSION_SECRET || (IS_PROD ? crypto.randomBytes(32).toString("hex") : "dev-only-change-me-in-production");
 if (IS_PROD && !process.env.SESSION_SECRET) console.warn("SESSION_SECRET is not set: staff sessions will not survive restarts or span instances.");
 const SESSION_MS = 12 * 60 * 60 * 1000;
@@ -340,7 +338,7 @@ async function handleApi(req, res, url) {
 
 async function handleRestaurantApi(req, res, url, rest, p) {
   const slug = rest.slug, staffOnly = (roles) => requireStaff(req, res, slug, roles);
-  if (req.method === "GET" && p === "/") return json(res, 200, { slug, name: rest.name, demo: slug === DEMO_SLUG });
+  if (req.method === "GET" && p === "/") return json(res, 200, { slug, name: rest.name });
 
   // --- auth ---
   if (req.method === "POST" && p === "/auth/login") {
@@ -382,17 +380,16 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     }
     const priced = priceOrder(rest, b.items);
     if (priced.error) return json(res, 400, priced);
-    const pay = demoPay(b.payment?.cardNumber);
     const order = {
       id: `ORD-${++rest.seq}`, tableId: table.id, tableLabel: table.label,
       items: priced.items, subtotal: priced.subtotal, surcharges: priced.surcharges, total: priced.total,
-      status: pay.ok ? "Received" : "PaymentFailed", payment: pay.ok ? { state: "paid-demo", last4: pay.last4 } : { state: "declined", reason: pay.reason },
+      status: "Received", payment: { state: "pay-at-counter" },
       idempotencyKey: b.idempotencyKey || null, createdAt: new Date().toISOString(),
-      history: [{ status: pay.ok ? "Received" : "PaymentFailed", at: new Date().toISOString() }],
+      history: [{ status: "Received", at: new Date().toISOString() }],
     };
     rest.orders.push(order); await saveStore();
-    if (pay.ok) broadcast(slug, "order", order); else broadcast(slug, "payment_failed", order);
-    return json(res, pay.ok ? 201 : 402, pay.ok ? { order } : { error: pay.reason, order });
+    broadcast(slug, "order", order);
+    return json(res, 201, { order });
   }
 
   const orderMatch = p.match(/^\/orders\/([\w-]+)$/);
@@ -518,8 +515,6 @@ const notFoundPage = (res, what = "Page") => {
 };
 async function serveStatic(req, res, url) {
   const p = url.pathname;
-  // Pre-multi-restaurant links (printed QR codes, bookmarks) open the demo restaurant.
-  if (p === "/guest" || p === "/kitchen" || p === "/admin") { res.writeHead(302, { Location: `/r/${DEMO_SLUG}${p}${url.search}` }); return res.end(); }
   let file;
   const rm = p.match(/^\/r\/([a-z0-9-]+)(?:\/(guest|kitchen|admin))?\/?$/);
   if (rm) {
@@ -527,7 +522,8 @@ async function serveStatic(req, res, url) {
     file = `${rm[2] || "restaurant"}.html`;
   } else {
     file = p === "/" ? "index.html" : p.slice(1);
-    if (!path.extname(file)) file += ".html";
+    // Only /signup is a bare top-level page; /guest, /kitchen, /admin etc. are gone.
+    if (!path.extname(file)) { if (p !== "/signup") return notFoundPage(res); file += ".html"; }
   }
   const full = path.join(PUBLIC_DIR, path.normalize(file));
   if (!full.startsWith(PUBLIC_DIR + path.sep) || !existsSync(full)) return notFoundPage(res);
@@ -547,7 +543,7 @@ export async function appHandler(req, res) {
       // host that happened to serve this image (localhost, a preview deploy,
       // or an http:// origin). PUBLIC_BASE_URL wins; on Vercel fall back to
       // the production domain; locally use the request origin (LAN demos).
-      const slug = String(url.searchParams.get("r") || DEMO_SLUG).toLowerCase();
+      const slug = String(url.searchParams.get("r") || "").toLowerCase();
       if (!Object.prototype.hasOwnProperty.call(store.restaurants, slug)) return notFoundPage(res, "Restaurant");
       const envBase = String(process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
       const publicBase = envBase || (process.env.VERCEL

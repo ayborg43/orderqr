@@ -3,10 +3,12 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-export const DEMO = "the-corner-table";
+// The platform starts empty (no seeded restaurant), so each test server gets
+// a restaurant through the real signup flow: sample menu, 12 tables, and the
+// manager/kitchen logins the suites use.
+export const REST = "test-restaurant";
+export const DEMO = REST; // legacy alias used across the suites
 
-// Starts a throwaway server on its own temp data directory, so tests never touch
-// data/store.json and every run starts from the same state.
 export async function startServer(port, { env = {}, store } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "orderqr-test-"));
   if (store) writeFileSync(path.join(dir, "store.json"), JSON.stringify(store));
@@ -14,9 +16,14 @@ export async function startServer(port, { env = {}, store } = {}) {
   const base = `http://localhost:${port}`;
   let up = false;
   for (let i = 0; i < 60 && !up; i++) {
-    try { up = (await fetch(`${base}/api/r/${DEMO}/tables`)).ok; } catch { await new Promise((r) => setTimeout(r, 150)); }
+    try { up = (await fetch(`${base}/health`)).ok; } catch { await new Promise((r) => setTimeout(r, 150)); }
   }
   if (!up) { proc.kill(); throw new Error("server did not start"); }
+  // 201 on first boot; 409 when a restart on the same DB already has it.
+  await fetch(`${base}/api/restaurants`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Test Restaurant", slug: REST, username: "admin", password: "admin123", kitchenPassword: "kitchen123", tables: 12, sampleMenu: true }),
+  });
   return { base, dir, stop: () => proc.kill() };
 }
 
