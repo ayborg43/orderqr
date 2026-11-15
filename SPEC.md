@@ -4,7 +4,7 @@
 
 - **Multiple restaurants** on one platform (multi-tenant), each a single location, dine-in only for v1.
   Every restaurant has its own address, menu, tables, orders, settings and staff logins (see §4a).
-- **Pay at counter** — no payment gateway. Orders go to the kitchen immediately; guests settle the table bill at the counter.
+- **Manual collection** — no payment in the app. A waiter collects in person; staff confirm collection, which unlocks the guest's invoice and receipt for that order.
 - References: Nomni QR ordering (guest experience) + LynnC table-to-kitchen guide (operations).
 
 Out of scope for v1: real payments (Stripe etc.), third-party POS, kitchen printers,
@@ -41,7 +41,7 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - G5. Basket shows quantities, modifiers, line totals, subtotal, surcharges, total.
 - G6. On submit, availability is **re-checked server-side**; a newly sold-out item is flagged, not ordered.
 - G7. Duplicate submit (double-tap / retry) with same idempotency key returns the same order — no duplicate.
-- G8. Checkout is pay-at-counter: no card is taken, every accepted order goes straight to the kitchen marked pay-at-counter.
+- G8. No card is ever taken: every accepted order goes straight to the kitchen marked awaiting-collection. Any staff member confirms collection (admin or KDS); from then on the guest can open that order's invoice and receipt (printable) — before confirmation, and for other tables, the documents return 403.
 - G9. Confirmation shows order number + live status (Received → Preparing → Ready → Served).
 - G10. Same table can place follow-up orders; guest can view the table's bill (all orders + total).
 - G11. "Call staff" button records an assistance request visible to staff surfaces.

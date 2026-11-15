@@ -147,6 +147,11 @@ async function loadStore() {
     delete store.restaurants[LEGACY_DEMO_SLUG];
     console.log(`Removed legacy demo restaurant (${LEGACY_DEMO_SLUG})`);
   }
+  // Normalise older payment states to the manual-collection flow.
+  for (const rest of Object.values(store.restaurants)) for (const o of rest.orders || []) {
+    if (o.payment?.state === "pay-at-counter") o.payment.state = "awaiting-collection";
+    if (o.payment?.state === "paid-demo") o.payment = { state: "paid", method: "manual", confirmedAt: o.createdAt };
+  }
   await saveStore();
 }
 let saveChain = Promise.resolve();
@@ -201,8 +206,9 @@ function priceOrder(rest, rawItems) {
   return { items, subtotal, surcharges, total };
 }
 
-/* No online payments: guests order from the table and pay at the counter.
-   Every accepted order goes straight to the kitchen marked pay-at-counter. */
+/* No payment in the app at all: a waiter collects the money in person, staff
+   confirm collection on the site, and only then can the guest open that
+   order's invoice and receipt. New orders start "awaiting-collection". */
 
 /* --- Staff authentication ---------------------------------------------------
    Signed, stateless session cookie (HMAC) per restaurant, so it works on
@@ -321,6 +327,29 @@ async function createRestaurant(req, res) {
   res.end(JSON.stringify({ slug, name, adminUrl: `/r/${slug}/admin`, kitchenUser: kitchenPassword ? rest.staff[1].username : null }));
 }
 
+/* --- Printable invoice / receipt (guest opens after payment is confirmed) --- */
+const htmlEsc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const docMoney = (n) => "₦" + Number(n).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function docLocked(res, msg) {
+  res.writeHead(403, { "Content-Type": "text/html" });
+  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not available yet</title><style>body{margin:0;background:#faf7e9;color:#1a221d;font:16px/1.5 system-ui,sans-serif}main{max-width:32rem;margin:14vh auto;padding:0 1.25rem}h1{letter-spacing:-.02em}</style><main><h1>Not available yet</h1><p>${htmlEsc(msg)}</p></main>`);
+}
+function docPage(rest, o, kind) {
+  const isReceipt = kind === "receipt";
+  const rows = o.items.map((i) => `<tr><td>${i.qty} × ${htmlEsc(i.name)}${i.modifiers?.length ? `<br><small>${i.modifiers.map((m) => htmlEsc(m.name)).join(", ")}</small>` : ""}</td><td class="n">${docMoney(i.unitPrice)}</td><td class="n">${docMoney(i.lineTotal)}</td></tr>`).join("");
+  const sur = (o.surcharges || []).map((s) => `<tr><td colspan="2">${htmlEsc(s.name)}</td><td class="n">${docMoney(s.amount)}</td></tr>`).join("");
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${isReceipt ? "RECEIPT" : "INVOICE"} ${htmlEsc(o.id)} — ${htmlEsc(rest.name)}</title>
+<style>body{margin:0;background:#fff;color:#1a221d;font:15px/1.5 system-ui,sans-serif}main{max-width:36rem;margin:2rem auto;padding:0 1.25rem}h1{letter-spacing:.08em;margin:.2rem 0}.paid{display:inline-block;border:2px solid #0e3727;color:#0e3727;font-weight:800;letter-spacing:.1em;padding:.15rem .6rem;border-radius:.4rem;transform:rotate(-3deg)}table{width:100%;border-collapse:collapse;margin:1rem 0}td,th{padding:.4rem .2rem;border-bottom:1px solid #e5e0cf;text-align:left;vertical-align:top}.n{text-align:right;white-space:nowrap}.tot td{font-weight:800;font-size:1.05rem;border-top:2px solid #1a221d}button{padding:.6rem 1.2rem;border-radius:999px;border:0;background:#0e3727;color:#fff;font-weight:700;cursor:pointer}@media print{button{display:none}}</style>
+<main><p>${htmlEsc(rest.name)}</p><h1>${isReceipt ? "RECEIPT" : "INVOICE"}</h1>
+<p>Order <b>${htmlEsc(o.id)}</b> · ${htmlEsc(o.tableLabel)}<br>Ordered ${new Date(o.createdAt).toLocaleString()}<br><span class="paid">PAID</span></p>
+<table><tr><th>Item</th><th class="n">Each</th><th class="n">Total</th></tr>${rows}
+<tr><td colspan="2">Subtotal</td><td class="n">${docMoney(o.subtotal)}</td></tr>${sur}
+<tr class="tot"><td colspan="2">Total ${isReceipt ? "paid" : ""}</td><td class="n">${docMoney(o.total)}</td></tr></table>
+${isReceipt ? `<p>Payment collected in person by your waiter and confirmed ${o.payment.confirmedAt ? "on " + new Date(o.payment.confirmedAt).toLocaleString() : ""}. Thank you.</p>` : `<p>Payment for this order has been collected in person and confirmed. This invoice records the amount paid.</p>`}
+<button onclick="window.print()">Print / save as PDF</button></main>`;
+}
+
 async function handleApi(req, res, url) {
   const p = url.pathname;
   if (req.method === "POST" && p === "/api/restaurants") return createRestaurant(req, res);
@@ -383,7 +412,7 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     const order = {
       id: `ORD-${++rest.seq}`, tableId: table.id, tableLabel: table.label,
       items: priced.items, subtotal: priced.subtotal, surcharges: priced.surcharges, total: priced.total,
-      status: "Received", payment: { state: "pay-at-counter" },
+      status: "Received", payment: { state: "awaiting-collection" },
       idempotencyKey: b.idempotencyKey || null, createdAt: new Date().toISOString(),
       history: [{ status: "Received", at: new Date().toISOString() }],
     };
@@ -412,6 +441,29 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     o.status = b.status; o.history.push({ status: b.status, at: new Date().toISOString() });
     await saveStore(); broadcast(slug, "order", o);
     return json(res, 200, { order: o });
+  }
+
+  // --- manual payment collection (waiter collects in person) ---
+  const confirmMatch = p.match(/^\/orders\/([\w-]+)\/confirm-payment$/);
+  if (req.method === "POST" && confirmMatch) {
+    const staff = staffOnly(); if (!staff) return;
+    const o = rest.orders.find((x) => x.id === confirmMatch[1]);
+    if (!o) return json(res, 404, { error: "Order not found" });
+    if (o.status === "Cancelled") return json(res, 400, { error: "A cancelled order cannot be marked paid" });
+    if (o.payment.state !== "paid") {
+      o.payment = { state: "paid", method: "manual", confirmedAt: new Date().toISOString(), confirmedBy: staff.username };
+      await saveStore(); broadcast(slug, "order", o);
+    }
+    return json(res, 200, { order: o });
+  }
+  const docMatch = p.match(/^\/orders\/([\w-]+)\/(invoice|receipt)$/);
+  if (req.method === "GET" && docMatch) {
+    const o = rest.orders.find((x) => x.id === docMatch[1]);
+    if (!o) return json(res, 404, { error: "Order not found" });
+    if (String(url.searchParams.get("table") || "") !== String(o.tableId)) return docLocked(res, "This document belongs to another table.");
+    if (o.payment.state !== "paid") return docLocked(res, "Available once your waiter has collected payment and staff confirm it here.");
+    res.writeHead(200, { "Content-Type": "text/html" });
+    return res.end(docPage(rest, o, docMatch[2]));
   }
 
   // --- assistance requests ---

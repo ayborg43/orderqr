@@ -2,8 +2,8 @@
 
 Any number of restaurants can use the platform. Each restaurant signs up, gets its
 own address (`/r/<name>`), menu, tables, QR codes and staff logins, and runs its own
-kitchen display and admin dashboard. Guests scan a table code, place an order, pay
-at the counter, and orders appear live on that restaurant's kitchen display.
+kitchen display and admin dashboard. Guests scan a table code, place an order, a waiter collects
+payment in person, and orders appear live on that restaurant's kitchen display.
 See [SPEC.md](SPEC.md) for scope, flows and acceptance checks.
 
 ## Run
@@ -35,8 +35,10 @@ starts empty — there is no demo restaurant and there are no default logins.
   run orders and assistance requests. A manager can also open the kitchen screen.
 - **No default accounts.** Every login is created at signup for that restaurant only.
   The pre-launch demo tenant (`the-corner-table`) is deleted automatically on boot.
-- **Payments.** There is no online payment: orders go to the kitchen marked
-  pay-at-counter, and the guest settles the table bill at the counter.
+- **Payments.** There is no payment in the app: a waiter collects the money in
+  person, any staff member confirms collection in admin or the kitchen display,
+  and only then can the guest open that order's invoice and receipt (printable
+  pages, saveable as PDF) from their order on the guest page.
 - In production (`NODE_ENV=production`) the server refuses to start without
   `SESSION_SECRET` and `PUBLIC_BASE_URL`.
 - Data persists to Postgres when `DATABASE_URL` is set, otherwise to

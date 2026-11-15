@@ -62,17 +62,18 @@ function ticket(o) {
       <span class="t-item__name">${esc(i.name)}<span class="tag">${esc(i.station)}</span></span>
       ${i.modifiers.length ? `<span class="t-item__mods">${i.modifiers.map(m => esc(m.group) + ': ' + esc(m.name)).join(' · ')}</span>` : ''}
       ${i.note ? `<span class="t-item__note">${icon('note')}<span>${esc(i.note)}</span></span>` : ''}</div>`).join('')}</div>
-    <div class="ticket__foot">${action(o)}<button class="btn plain" type="button" onclick="cancelOrder('${esc(o.id)}')">Can’t fulfil</button></div>
+    <div class="ticket__foot">${action(o)}${o.payment?.state === 'paid' ? '<span class="badge Ready">Paid</span>' : `<button class="btn secondary" type="button" onclick="confirmPay('${esc(o.id)}')">Confirm collected</button>`}<button class="btn plain" type="button" onclick="cancelOrder('${esc(o.id)}')">Can’t fulfil</button></div>
   </article>`;
 }
 function render() {
   renderStations();
   const list = orders.filter(o => !station || o.items.some(i => i.station === station));
   $('#board').innerHTML = list.length ? list.map(ticket).join('')
-    : `<div class="k-empty">${icon('checkCircle')}<strong>${station ? station + ' is clear' : 'All clear'}</strong>New paid orders appear here the moment they land.</div>`;
+    : `<div class="k-empty">${icon('checkCircle')}<strong>${station ? station + ' is clear' : 'All clear'}</strong>New orders appear here the moment they land.</div>`;
   seen = new Set(orders.map(o => o.id));
 }
 window.setStatus = async (id, status) => { await send(UI.R('/orders/') + id, 'PATCH', { status }); load(); };
+window.confirmPay = async (id) => { await send(UI.R('/orders/') + encodeURIComponent(id) + '/confirm-payment', 'POST'); load(); };
 window.cancelOrder = async (id) => { if (confirm('Cancel this order because the kitchen cannot fulfil it? The guest will be told.')) setStatus(id, 'Cancelled'); };
 $('#stations').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; station = b.dataset.s; render(); });
 
