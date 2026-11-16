@@ -311,16 +311,24 @@ async function createRestaurant(req, res) {
   const slug = String(b.slug || slugify(name)).trim().toLowerCase();
   const problem = slugProblem(slug);
   if (problem) return json(res, store.restaurants[slug] ? 409 : 400, { error: problem, field: "slug" });
-  const username = String(b.username || "").trim();
-  if (!/^[A-Za-z0-9._-]{3,32}$/.test(username)) return json(res, 400, { error: "Username must be 3–32 letters, numbers, dots, dashes or underscores.", field: "username" });
+  // Usernames are taken exactly as typed: no silent trimming, and no whitespace at all.
+  const username = String(b.username || "");
+  if (/\s/.test(username)) return json(res, 400, { error: "Username can’t contain spaces.", field: "username" });
+  if (!/^[A-Za-z0-9._-]{3,32}$/.test(username)) return json(res, 400, { error: "Use 3–32 letters, numbers, dots, dashes or underscores.", field: "username" });
+  if (/^kitchen(-screen)?$/i.test(username)) return json(res, 400, { error: "That username is kept for the kitchen screen.", field: "username" });
   const password = String(b.password || "");
   if (password.length < 8 || password.length > 200) return json(res, 400, { error: "Password must be at least 8 characters.", field: "password" });
   const kitchenPassword = String(b.kitchenPassword || "");
   if (kitchenPassword && (kitchenPassword.length < 8 || kitchenPassword.length > 200)) return json(res, 400, { error: "Kitchen password must be at least 8 characters.", field: "kitchenPassword" });
-  const tables = Math.max(1, Math.min(60, parseInt(b.tables, 10) || 10));
+  if (kitchenPassword && kitchenPassword === password) return json(res, 400, { error: "Use a different password from your own.", field: "kitchenPassword" });
+  let tables = 10; // default when left blank
+  if (b.tables !== undefined && b.tables !== null && b.tables !== "") {
+    tables = Number(b.tables);
+    if (!Number.isInteger(tables) || tables < 1 || tables > 60) return json(res, 400, { error: "Enter a whole number from 1 to 60.", field: "tables" });
+  }
   const rest = newRestaurant({ slug, name, tables, sampleMenu: b.sampleMenu !== false });
   rest.staff.push({ username, role: "manager", hash: hashPassword(password) });
-  if (kitchenPassword) rest.staff.push({ username: username.toLowerCase() === "kitchen" ? "kitchen-screen" : "kitchen", role: "kitchen", hash: hashPassword(kitchenPassword) });
+  if (kitchenPassword) rest.staff.push({ username: "kitchen", role: "kitchen", hash: hashPassword(kitchenPassword) });
   store.restaurants[slug] = rest; noteSignup(ip);
   await saveStore();
   res.writeHead(201, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession({ username, role: "manager" }, slug), SESSION_MS / 1000) });

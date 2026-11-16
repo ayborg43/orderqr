@@ -31,17 +31,50 @@
   </div>
 
   <form class="hub__card signup__form" id="form" novalidate>
-    <label class="field"><span>Restaurant name</span><input type="text" id="name" maxlength="60" autocomplete="organization" required placeholder="Lagos Grill House"></label>
-    <label class="field"><span>Web address</span>
-      <span class="slugrow"><span class="slugrow__pre" id="origin">chopdesk.propertypadi.com/r/</span><input type="text" id="slug" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false" required></span>
-      <span class="hint" id="slugHint" aria-live="polite"></span>
-    </label>
-    <div class="formgrid">
-      <label class="field"><span>Your username</span><input type="text" id="username" maxlength="32" autocomplete="username" autocapitalize="none" required></label>
-      <label class="field"><span>Your password</span><input type="password" id="password" minlength="8" autocomplete="new-password" required><span class="hint">At least 8 characters</span></label>
-      <label class="field"><span>Number of tables</span><input type="number" id="tables" min="1" max="60" value="10" inputmode="numeric"></label>
-      <label class="field"><span>Kitchen screen password <em>(optional)</em></span><input type="password" id="kitchenPassword" minlength="8" autocomplete="new-password"><span class="hint">Lets kitchen staff sign in without admin access</span></label>
+    <div class="fld">
+      <label for="name">Restaurant name</label>
+      <input type="text" id="name" name="organization" maxlength="60" autocomplete="organization" required aria-describedby="e-name" placeholder="Lagos Grill House">
+      <p class="field-err" id="e-name" aria-live="polite"></p>
     </div>
+
+    <div class="fld">
+      <label for="slug">Web address</label>
+      <div class="slugrow"><span class="slugrow__pre" id="origin" aria-hidden="true">chopdesk.propertypadi.com/r/</span><input type="text" id="slug" name="slug" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="h-slug slugHint e-slug"></div>
+      <p class="hint" id="h-slug">Part of your QR codes, so it can’t be changed later.</p>
+      <p class="hint" id="slugHint" aria-live="polite"></p>
+      <p class="field-err" id="e-slug" aria-live="polite"></p>
+    </div>
+
+    <div class="formgrid">
+      <div class="fld">
+        <label for="username">Your username</label>
+        <input type="text" id="username" name="username" maxlength="32" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required aria-describedby="h-username e-username">
+        <p class="hint" id="h-username">Letters, numbers, . _ - only. No spaces.</p>
+        <p class="field-err" id="e-username" aria-live="polite"></p>
+      </div>
+
+      <div class="fld">
+        <label for="password">Your password</label>
+        <div class="pwrow"><input type="password" id="password" name="new-password" maxlength="200" autocomplete="new-password" required aria-describedby="h-password e-password"><button class="pwtoggle" type="button" data-for="password" aria-pressed="false" aria-label="Show password">Show</button></div>
+        <p class="hint" id="h-password">At least 8 characters</p>
+        <p class="field-err" id="e-password" aria-live="polite"></p>
+      </div>
+
+      <div class="fld">
+        <label for="tables">Number of tables</label>
+        <input type="text" id="tables" name="tables" value="10" inputmode="numeric" pattern="[0-9]*" maxlength="2" autocomplete="off" aria-describedby="h-tables e-tables">
+        <p class="hint" id="h-tables">Between 1 and 60. You can add more later.</p>
+        <p class="field-err" id="e-tables" aria-live="polite"></p>
+      </div>
+
+      <div class="fld">
+        <label for="kitchenPassword">Kitchen screen password <em>(optional)</em></label>
+        <div class="pwrow"><input type="password" id="kitchenPassword" name="kitchen-password" maxlength="200" autocomplete="new-password" aria-describedby="h-kitchen e-kitchenPassword"><button class="pwtoggle" type="button" data-for="kitchenPassword" aria-pressed="false" aria-label="Show kitchen password">Show</button></div>
+        <p class="hint" id="h-kitchen">Kitchen staff sign in as <b>kitchen</b> with this, without admin access. Must differ from yours.</p>
+        <p class="field-err" id="e-kitchenPassword" aria-live="polite"></p>
+      </div>
+    </div>
+
     <label class="toggle chk" style="align-self:flex-start"><input type="checkbox" id="sample" checked> Start with a sample menu</label>
     <p class="inline-err" id="err" role="alert" hidden></p>
     <button class="btn lg block" type="submit" id="go">Create restaurant</button>
@@ -49,40 +82,116 @@
 </main>
 <script src="/ui.js"></script>
 <script>
-const { $, $$, icon, send, api } = UI;
+const { $, $$, icon, send, api, esc } = UI;
 $$('[data-ic]').forEach(el => { el.innerHTML = icon(el.dataset.ic); });
 $('#origin').textContent = location.host + '/r/';
+
+/* ---------- Rules (the server enforces the same ones) ---------- */
+const USER_BAD = /[^A-Za-z0-9._-]/g;
+const SLUG_OK = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const RULES = {
+  name: (v) => { v = v.trim(); return v.length < 2 || v.length > 60 ? 'Enter your restaurant name (2–60 characters).' : ''; },
+  slug: (v) => !v ? 'Choose a web address.' : (v.length < 3 || v.length > 40 || !SLUG_OK.test(v)) ? 'Use 3–40 letters, numbers and single hyphens.' : slugState.bad && slugState.slug === v ? slugState.bad : '',
+  username: (v) => /\s/.test(v) ? 'Username can’t contain spaces.' : /^kitchen(-screen)?$/i.test(v) ? 'That username is kept for the kitchen screen.' : !/^[A-Za-z0-9._-]{3,32}$/.test(v) ? 'Use 3–32 letters, numbers, dots, dashes or underscores.' : '',
+  password: (v) => v.length < 8 ? 'Password must be at least 8 characters.' : '',
+  tables: (v) => { const n = Number(v); return !/^\d{1,2}$/.test(v.trim()) || n < 1 || n > 60 ? 'Enter a whole number from 1 to 60.' : ''; },
+  kitchenPassword: (v) => !v ? '' : v.length < 8 ? 'Kitchen password must be at least 8 characters.' : v === $('#password').value ? 'Use a different password from your own.' : '',
+};
+const FIELDS = ['name', 'slug', 'username', 'password', 'tables', 'kitchenPassword'];
+const touched = new Set();
+const slugState = { slug: '', bad: '' };
+
+function setError(id, msg) {
+  const el = $('#' + id), out = $('#e-' + id);
+  out.textContent = msg; el.setAttribute('aria-invalid', msg ? 'true' : 'false');
+  el.closest('.slugrow')?.classList.toggle('invalid', !!msg);
+}
+function validate(id, { show = true } = {}) {
+  const msg = RULES[id]($('#' + id).value);
+  if (show) setError(id, msg);
+  return msg;
+}
+// Show a field's error once the person has interacted with it, then keep it live.
+FIELDS.forEach((id) => {
+  const el = $('#' + id);
+  el.addEventListener('blur', () => { touched.add(id); validate(id); if (id === 'password' && touched.has('kitchenPassword')) validate('kitchenPassword'); });
+  el.addEventListener('input', () => { if (touched.has(id)) validate(id); if (id === 'password' && touched.has('kitchenPassword')) validate('kitchenPassword'); });
+});
+
+/* ---------- Username: spaces and symbols can't be typed or pasted ---------- */
+const uHint = $('#h-username'), uHintText = uHint.textContent;
+let uTimer;
+$('#username').addEventListener('input', (e) => {
+  const el = e.target, v = el.value, pos = el.selectionStart ?? v.length;
+  const clean = v.replace(USER_BAD, '');
+  if (clean === v) return;
+  const before = v.slice(0, pos).replace(USER_BAD, '').length;
+  el.value = clean; el.setSelectionRange(before, before);
+  uHint.classList.add('bad'); uHint.textContent = /\s/.test(v) ? 'Spaces aren’t allowed in a username.' : 'Only letters, numbers, . _ and - are allowed.';
+  clearTimeout(uTimer); uTimer = setTimeout(() => { uHint.classList.remove('bad'); uHint.textContent = uHintText; }, 2600);
+});
+
+/* ---------- Name -> address; address is cleaned as it is typed ---------- */
 const slugify = (s) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '');
+const cleanSlug = (s) => s.toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-{2,}/g, '-').replace(/^-+/, '').slice(0, 40);
 let slugTouched = false, timer;
-$('#name').addEventListener('input', () => { if (!slugTouched) { $('#slug').value = slugify($('#name').value); check(); } });
-$('#slug').addEventListener('input', () => { slugTouched = true; check(); });
+$('#name').addEventListener('input', () => { if (!slugTouched) { $('#slug').value = slugify($('#name').value); check(); if (touched.has('slug')) validate('slug'); } });
+$('#slug').addEventListener('input', (e) => {
+  const el = e.target, v = el.value, c = cleanSlug(v);
+  slugTouched = c !== '';
+  if (c !== v) { const pos = el.selectionStart ?? v.length; const keep = cleanSlug(v.slice(0, pos)).length; el.value = c; el.setSelectionRange(keep, keep); }
+  check();
+});
 function check() {
   clearTimeout(timer);
-  const slug = $('#slug').value.trim().toLowerCase(), hint = $('#slugHint');
-  hint.className = 'hint'; if (!slug) { hint.textContent = ''; return; }
+  const slug = $('#slug').value.replace(/-+$/, ''), hint = $('#slugHint');
+  hint.className = 'hint'; slugState.slug = slug; slugState.bad = '';
+  if (!slug) { hint.textContent = ''; return; }
+  if (RULES.slug(slug)) { hint.textContent = ''; return; }
   hint.textContent = 'Checking…';
   timer = setTimeout(async () => {
-    const { data } = await api('/api/restaurants/check?slug=' + encodeURIComponent(slug));
-    if ($('#slug').value.trim().toLowerCase() !== slug) return;
+    let data = {};
+    try { ({ data } = await api('/api/restaurants/check?slug=' + encodeURIComponent(slug))); } catch { hint.textContent = ''; return; }
+    if ($('#slug').value.replace(/-+$/, '') !== slug) return;
+    slugState.bad = data.available ? '' : (data.reason || 'That address isn’t available.');
     hint.className = 'hint ' + (data.available ? 'ok' : 'bad');
-    hint.textContent = data.available ? 'Available: ' + location.host + '/r/' + slug : (data.reason || 'Not available');
+    hint.textContent = data.available ? 'Available: ' + location.host + '/r/' + slug : slugState.bad;
+    if (touched.has('slug')) validate('slug');
   }, 300);
 }
-function fail(msg, field) {
-  $('#err').innerHTML = icon('alert') + '<span>' + UI.esc(msg) + '</span>'; $('#err').hidden = false;
-  const el = field && $('#' + field); if (el) el.focus();
-}
+
+/* ---------- Tables: digits only ---------- */
+$('#tables').addEventListener('input', (e) => { const v = e.target.value.replace(/\D/g, ''); if (v !== e.target.value) e.target.value = v; });
+
+/* ---------- Show / hide password ---------- */
+$$('.pwtoggle').forEach((b) => b.addEventListener('click', () => {
+  const input = $('#' + b.dataset.for), show = input.type === 'password';
+  input.type = show ? 'text' : 'password'; b.textContent = show ? 'Hide' : 'Show'; b.setAttribute('aria-pressed', String(show)); b.setAttribute('aria-label', (show ? 'Hide ' : 'Show ') + (b.dataset.for === 'password' ? 'password' : 'kitchen password'));
+}));
+
+/* ---------- Submit ---------- */
+function fail(msg) { $('#err').innerHTML = icon('alert') + '<span>' + esc(msg) + '</span>'; $('#err').hidden = false; }
 $('#form').onsubmit = async (e) => {
   e.preventDefault(); $('#err').hidden = true;
+  $('#slug').value = $('#slug').value.replace(/-+$/, '');
+  let first = null;
+  FIELDS.forEach((id) => { touched.add(id); if (validate(id) && !first) first = id; });
+  if (first) { $('#' + first).focus(); $('#' + first).scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
   const btn = $('#go'); btn.disabled = true; btn.textContent = 'Creating…';
-  const { ok, data } = await send('/api/restaurants', 'POST', {
-    name: $('#name').value, slug: $('#slug').value.trim().toLowerCase(), username: $('#username').value,
-    password: $('#password').value, kitchenPassword: $('#kitchenPassword').value,
-    tables: parseInt($('#tables').value, 10) || 10, sampleMenu: $('#sample').checked,
-  });
-  if (ok) { location.href = data.adminUrl; return; }
-  btn.disabled = false; btn.textContent = 'Create restaurant';
-  fail(data.error || 'Could not create the restaurant. Try again.', data.field === 'kitchenPassword' ? 'kitchenPassword' : data.field);
+  try {
+    const { ok, data } = await send('/api/restaurants', 'POST', {
+      name: $('#name').value.trim(), slug: $('#slug').value, username: $('#username').value,
+      password: $('#password').value, kitchenPassword: $('#kitchenPassword').value,
+      tables: Number($('#tables').value), sampleMenu: $('#sample').checked,
+    });
+    if (ok) { location.href = data.adminUrl; return; }
+    btn.disabled = false; btn.textContent = 'Create restaurant';
+    if (data.field && FIELDS.includes(data.field)) { setError(data.field, data.error); $('#' + data.field).focus(); }
+    else fail(data.error || 'Could not create the restaurant. Try again.');
+  } catch {
+    btn.disabled = false; btn.textContent = 'Create restaurant';
+    fail('Couldn’t reach the server. Check your connection and try again.');
+  }
 };
 </script>
 </body>

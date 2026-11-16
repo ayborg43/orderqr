@@ -43,6 +43,21 @@ test("signup validates name, address, username and passwords", async () => {
   assert.equal((await signup({ ...A, name: "Another", slug: "good-one", username: "a b" })).status, 400);
   assert.equal((await signup({ ...A, name: "Another", slug: "good-two", password: "short" })).status, 400);
   assert.equal((await req("GET", "/api/restaurants/check?slug=lagos-grill-house")).body.available, false);
+  // Usernames: no whitespace anywhere (leading and trailing spaces are rejected, not trimmed away).
+  for (const u of ["a b", " ayo", "ayo ", "ay\to", "ay\no", "ab", "x".repeat(33), "ayo@home", "kitchen", "Kitchen-Screen"]) {
+    const r = await signup({ ...A, name: "Another", slug: "good-three", username: u });
+    assert.equal(r.status, 400, JSON.stringify(u));
+    assert.equal(r.body.field, "username");
+  }
+  assert.match((await signup({ ...A, name: "Another", slug: "good-three", username: "a b" })).body.error, /spaces/i);
+  // Tables: a whole number from 1 to 60; blank means the default, nothing is silently clamped.
+  for (const t of [0, 61, 999, -3, 2.5, "abc"]) {
+    const r = await signup({ ...A, name: "Another", slug: "good-four", tables: t });
+    assert.equal(r.status, 400, String(t)); assert.equal(r.body.field, "tables");
+  }
+  // The kitchen screen must not share the manager's password.
+  const same = await signup({ ...A, name: "Another", slug: "good-five", kitchenPassword: A.password });
+  assert.equal(same.status, 400); assert.equal(same.body.field, "kitchenPassword");
   assert.equal((await req("GET", "/api/restaurants/check?slug=brand-new-place")).body.available, true);
 });
 

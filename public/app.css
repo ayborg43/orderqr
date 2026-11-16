@@ -817,3 +817,36 @@ label.field>.slugrow:focus-within{border-color:var(--brand);box-shadow:0 0 0 4px
 label.field>.hint,.hint{display:block;margin:6px 0 0;font-size:13px;font-weight:500;color:var(--muted);min-height:1.2em}
 .hint.ok{color:var(--basil-deep)}.hint.bad{color:var(--paprika-deep)}
 label.field em{font-style:normal;font-weight:500}
+
+/* Form feedback: inline errors, invalid state, password reveal */
+label.field>.field-err{display:block;margin:6px 0 0;font-size:13px;font-weight:650;color:var(--paprika-deep);line-height:1.35}
+label.field>.field-err:empty{display:none}
+input[aria-invalid=true]{border-color:var(--paprika)!important}
+input[aria-invalid=true]:focus-visible{box-shadow:0 0 0 4px rgba(201,58,34,.22)!important}
+label.field>.slugrow.invalid{border-color:var(--paprika)}
+label.field>.pwrow{position:relative;display:block;margin:0}
+.pwrow input{padding-right:78px}
+.pwtoggle{position:absolute;right:6px;top:50%;translate:0 -50%;min-height:36px;padding:0 12px;border:0;border-radius:9px;background:transparent;color:var(--brand-deep);font-weight:700;font-size:13.5px;cursor:pointer}
+.pwtoggle:hover{background:var(--brand-tint)}
+
+/* Signup form blocks: real <label for>, so the accessible name is just the label text */
+.fld{display:block;min-width:0}
+.fld>label{display:block;margin-bottom:6px;font-size:13px;font-weight:650;color:var(--muted)}
+.fld>label em{font-style:normal;font-weight:500}
+.fld .hint{display:block;margin:6px 0 0;font-size:13px;font-weight:500;color:var(--muted);line-height:1.4;min-height:0}
+.fld .hint:empty{display:none}
+.fld .field-err{margin:6px 0 0;font-size:13px;font-weight:650;color:var(--paprika-deep);line-height:1.35}
+.fld .field-err:empty{display:none}
+.fld .slugrow{display:flex;align-items:stretch;border:1.5px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}
+.fld .slugrow:focus-within{border-color:var(--brand);box-shadow:0 0 0 4px rgba(14,55,39,.2)}
+.fld .slugrow.invalid{border-color:var(--paprika)}
+.fld .pwrow{position:relative;display:block}
+/* Inputs were inheriting the 13px label size: 16px stops iOS zooming in on focus and reads properly */
+.fld input,.fld select,label.field input,label.field textarea,label.field select{font-size:16px;font-weight:500;color:var(--ink)}
+@media(max-width:520px){
+  .fld .slugrow{flex-direction:column}
+  .fld .slugrow .slugrow__pre{padding:10px 14px 0;font-size:13px}
+  .fld .slugrow input{padding-left:14px;padding-top:4px}
+}
+/* Phones: get to the form sooner */
+@media(max-width:899px){.signup{gap:22px;padding-top:30px}.signup__points{display:none}.signup__note{margin-top:14px}}
