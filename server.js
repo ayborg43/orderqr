@@ -18,7 +18,7 @@ const STORE_FILE = path.join(DATA_DIR, "store.json");
 const LEGACY_DEMO_SLUG = "the-corner-table"; // pre-production demo tenant, removed on boot
 const STATIONS = ["Grill", "Kitchen", "Drinks", "Dessert"];
 const DIETARY = ["vegan", "vegetarian", "gluten-free", "spicy"];
-const RESERVED_SLUGS = new Set(["api", "r", "signup", "guest", "kitchen", "admin", "qr", "fonts", "app", "ui", "index", "www", "static", "assets", "login", "restaurant", "restaurants", "health", "status", "help", "support"]);
+const RESERVED_SLUGS = new Set(["api", "r", "signup", "guest", "kitchen", "admin", "qr", "fonts", "app", "ui", "index", "www", "static", "assets", "login", "superadmin", "restaurant", "restaurants", "health", "status", "help", "support"]);
 const SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const seedMenu = [
@@ -350,8 +350,111 @@ ${isReceipt ? `<p>Payment collected in person by your waiter and confirmed ${o.p
 <button onclick="window.print()">Print / save as PDF</button></main>`;
 }
 
+/* --- Super admin: one platform operator, env credentials, own cookie --------
+   Sees and moderates every restaurant, but is not a restaurant session and
+   no restaurant session opens it. Unconfigured (no env) means disabled. */
+const SUPERADMIN = { username: process.env.SUPERADMIN_USER || "", password: process.env.SUPERADMIN_PASSWORD || "" };
+const SA_COOKIE = "qr_superadmin";
+function superFromReq(req) {
+  const raw = String(req.headers.cookie || "").split(";").map((c) => c.trim()).find((c) => c.startsWith(SA_COOKIE + "="));
+  if (!raw) return null;
+  const [payload, sig] = raw.slice(SA_COOKIE.length + 1).split(".");
+  if (!payload || !sig || !safeEq(sig, signPayload(payload))) return null;
+  try {
+    const s = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return s.u && s.r === "superadmin" && s.exp > Date.now() ? { username: s.u, role: "superadmin" } : null;
+  } catch { return null; }
+}
+const superCookie = (req, value, maxAgeSec) => `${SA_COOKIE}=${value}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}${req.headers["x-forwarded-proto"] === "https" ? "; Secure" : ""}`;
+function requireSuper(req, res) {
+  const sa = superFromReq(req);
+  if (!sa) { json(res, 401, { error: "Super admin sign-in required", code: "AUTH_REQUIRED" }); return null; }
+  return sa;
+}
+const restSummary = (rest) => {
+  const paid = rest.orders.filter((o) => o.payment?.state === "paid");
+  return {
+    slug: rest.slug, name: rest.name, createdAt: rest.createdAt,
+    tables: rest.tables.length, menuItems: rest.menu.length, staff: rest.staff.map((a) => ({ username: a.username, role: a.role })),
+    orders: rest.orders.length, awaitingCollection: rest.orders.filter((o) => o.payment?.state === "awaiting-collection" && o.status !== "Cancelled").length,
+    collected: money(paid.reduce((s, o) => s + o.total, 0)), openAssists: rest.assistRequests.filter((r) => !r.done).length,
+    lastOrderAt: rest.orders.length ? rest.orders[rest.orders.length - 1].createdAt : null,
+  };
+};
+async function handleSuperadmin(req, res, url) {
+  const p = url.pathname;
+  if (req.method === "POST" && p === "/api/superadmin/auth/login") {
+    if (!SUPERADMIN.username || !SUPERADMIN.password) return json(res, 503, { error: "Super admin is not configured. Set SUPERADMIN_USER and SUPERADMIN_PASSWORD." });
+    const ip = clientIp(req);
+    if (loginThrottled(ip, "__platform__")) return json(res, 429, { error: "Too many failed sign-ins. Try again in a few minutes." });
+    const b = await bodyJson(req);
+    const ok = safeEq(String(b.username || ""), SUPERADMIN.username) & safeEq(String(b.password || ""), SUPERADMIN.password);
+    if (!ok) { noteLoginFail(ip, "__platform__"); return json(res, 401, { error: "Wrong username or password" }); }
+    loginFails.delete(failKey(ip, "__platform__"));
+    const payload = b64url(JSON.stringify({ u: SUPERADMIN.username, r: "superadmin", exp: Date.now() + SESSION_MS }));
+    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": superCookie(req, `${payload}.${signPayload(payload)}`, SESSION_MS / 1000) });
+    return res.end(JSON.stringify({ user: SUPERADMIN.username, role: "superadmin" }));
+  }
+  if (req.method === "POST" && p === "/api/superadmin/auth/logout") {
+    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": superCookie(req, "", 0) });
+    return res.end(JSON.stringify({ ok: true }));
+  }
+  const sa = requireSuper(req, res); if (!sa) return;
+  if (req.method === "GET" && p === "/api/superadmin/auth/me") return json(res, 200, { user: sa.username, role: sa.role });
+  if (req.method === "GET" && p === "/api/superadmin/overview") {
+    const restaurants = Object.values(store.restaurants).map(restSummary).sort((a, b) => a.name.localeCompare(b.name));
+    return json(res, 200, {
+      restaurants,
+      totals: {
+        restaurants: restaurants.length, orders: restaurants.reduce((s, r) => s + r.orders, 0),
+        collected: money(restaurants.reduce((s, r) => s + r.collected, 0)),
+        awaitingCollection: restaurants.reduce((s, r) => s + r.awaitingCollection, 0),
+        openAssists: restaurants.reduce((s, r) => s + r.openAssists, 0),
+      },
+    });
+  }
+  const rm = p.match(/^\/api\/superadmin\/restaurants\/([a-z0-9-]+)(\/.*)?$/);
+  if (!rm) return json(res, 404, { error: "Not found" });
+  const rest = Object.prototype.hasOwnProperty.call(store.restaurants, rm[1]) ? store.restaurants[rm[1]] : null;
+  if (!rest) return json(res, 404, { error: "Restaurant not found", code: "NO_RESTAURANT" });
+  const sub = rm[2] || "/";
+  if (req.method === "GET" && sub === "/") {
+    return json(res, 200, { ...restSummary(rest), settings: rest.settings, orders: rest.orders.slice().reverse().slice(0, 50), tablesList: rest.tables });
+  }
+  if (req.method === "DELETE" && sub === "/") {
+    const b = await bodyJson(req);
+    if (b.confirm !== rest.slug) return json(res, 400, { error: `Type the restaurant address (${rest.slug}) to confirm deletion.` });
+    delete store.restaurants[rest.slug]; clients.delete(rest.slug);
+    await saveStore();
+    return json(res, 200, { ok: true, deleted: rest.slug });
+  }
+  const reset = sub.match(/^\/staff\/([^/]+)\/reset-password$/);
+  if (req.method === "POST" && reset) {
+    const acct = rest.staff.find((a) => a.username.toLowerCase() === decodeURIComponent(reset[1]).toLowerCase());
+    if (!acct) return json(res, 404, { error: "Staff account not found" });
+    const b = await bodyJson(req);
+    if (String(b.password || "").length < 8 || String(b.password).length > 200) return json(res, 400, { error: "Password must be at least 8 characters." });
+    acct.hash = hashPassword(b.password);
+    await saveStore();
+    return json(res, 200, { ok: true, username: acct.username, role: acct.role });
+  }
+  const confirm = sub.match(/^\/orders\/([\w-]+)\/confirm-payment$/);
+  if (req.method === "POST" && confirm) {
+    const o = rest.orders.find((x) => x.id === confirm[1]);
+    if (!o) return json(res, 404, { error: "Order not found" });
+    if (o.status === "Cancelled") return json(res, 400, { error: "A cancelled order cannot be marked paid" });
+    if (o.payment.state !== "paid") {
+      o.payment = { state: "paid", method: "manual", confirmedAt: new Date().toISOString(), confirmedBy: `superadmin:${sa.username}` };
+      await saveStore(); broadcast(rest.slug, "order", o);
+    }
+    return json(res, 200, { order: o });
+  }
+  return json(res, 404, { error: "Not found" });
+}
+
 async function handleApi(req, res, url) {
   const p = url.pathname;
+  if (p.startsWith("/api/superadmin/")) return handleSuperadmin(req, res, url);
   if (req.method === "POST" && p === "/api/restaurants") return createRestaurant(req, res);
   if (req.method === "GET" && p === "/api/restaurants/check") {
     const slug = String(url.searchParams.get("slug") || "").toLowerCase();
@@ -574,8 +677,8 @@ async function serveStatic(req, res, url) {
     file = `${rm[2] || "restaurant"}.html`;
   } else {
     file = p === "/" ? "index.html" : p.slice(1);
-    // Only /signup and /login are bare top-level pages; /guest, /kitchen, /admin etc. are gone.
-    if (!path.extname(file)) { if (p !== "/signup" && p !== "/login") return notFoundPage(res); file += ".html"; }
+    // Only /signup, /login and /superadmin are bare top-level pages; /guest etc. are gone.
+    if (!path.extname(file)) { if (!["/signup", "/login", "/superadmin"].includes(p)) return notFoundPage(res); file += ".html"; }
   }
   const full = path.join(PUBLIC_DIR, path.normalize(file));
   if (!full.startsWith(PUBLIC_DIR + path.sep) || !existsSync(full)) return notFoundPage(res);

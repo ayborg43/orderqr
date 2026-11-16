@@ -6,7 +6,7 @@
   "description": "Chopdesk: multi-restaurant QR table ordering. Each restaurant gets its own menu, tables, staff logins, kitchen display and admin. Pay-at-counter ordering.",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/smoke.test.mjs tests/auth.test.mjs tests/qr.test.mjs tests/tenants.test.mjs tests/db.test.mjs"
+    "test": "node --test tests/smoke.test.mjs tests/auth.test.mjs tests/qr.test.mjs tests/tenants.test.mjs tests/db.test.mjs tests/superadmin.test.mjs"
   },
   "engines": {
     "node": ">=20"

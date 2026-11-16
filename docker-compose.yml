@@ -24,6 +24,9 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-orderqr}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in Dokploy environment}@db:5432/${POSTGRES_DB:-orderqr}
       # Required in production: long random string (Dokploy: generate one).
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in Dokploy environment}
+      # Platform super admin (/superadmin). Leave blank to disable it entirely.
+      SUPERADMIN_USER: ${SUPERADMIN_USER:-}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
       # Public URL guests reach, e.g. https://order.example.com (no trailing /).
       # Table QR codes encode this, so set it before printing any codes.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0e3727">
+<title>Super admin · Chopdesk</title>
+<link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="a-head"><div class="a-head__in">
+  <div class="a-brand"><span>Chopdesk</span><small>Super admin — whole platform</small></div>
+  <span class="spacer"></span><span class="staff-user" id="who"></span>
+  <button class="btn small ghost" type="button" id="signOut" hidden>Sign out</button>
+  <a class="btn small ghost" href="/">Home</a>
+</div></header>
+
+<main class="wrap" id="loginWrap">
+  <form class="auth-card" id="loginForm" style="margin:10vh auto">
+    <span class="auth-card__brand">Chopdesk platform</span>
+    <h2>Super admin sign in</h2>
+    <p class="auth-card__msg">Platform operator only. Restaurant staff use the <a href="/login">staff login</a>.</p>
+    <label class="field"><span>Username</span><input type="text" id="u" autocomplete="username" required></label>
+    <label class="field"><span>Password</span><input type="password" id="pw" autocomplete="current-password" required></label>
+    <p class="auth-card__err" id="err" role="alert"></p>
+    <button class="btn block lg" type="submit">Sign in</button>
+  </form>
+</main>
+
+<main class="wrap" id="dash" hidden>
+  <section class="a-sec"><div class="a-sec__head"><div><h2>Platform overview</h2><p class="muted" id="totals"></p></div>
+    <button class="btn secondary" type="button" id="refresh">Refresh</button></div>
+    <div class="panel" id="rests"></div>
+  </section>
+  <section class="a-sec" id="detailSec" hidden>
+    <div class="a-sec__head"><div><h2 id="dName"></h2><p class="muted" id="dMeta"></p></div>
+      <div class="row" style="gap:8px"><a class="btn secondary" id="dVisit" target="_blank" rel="noopener">Open restaurant</a>
+      <button class="btn danger plainish" type="button" id="dDelete">Delete restaurant</button></div></div>
+    <div class="panel pad" id="dStaff" style="margin-bottom:14px"></div>
+    <div class="panel" id="dOrders"></div>
+  </section>
+</main>
+
+<script src="/ui.js"></script>
+<script>
+const { $, esc, fmt, icon, api, send } = UI;
+const SA = (p) => '/api/superadmin' + p;
+let current = null;
+
+async function boot() {
+  const { ok, data } = await api(SA('/auth/me'));
+  $('#loginWrap').hidden = ok; $('#dash').hidden = !ok;
+  $('#signOut').hidden = !ok;
+  if (ok) { $('#who').textContent = data.user + ' · superadmin'; loadOverview(); }
+}
+$('#loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const { ok, data } = await send(SA('/auth/login'), 'POST', { username: $('#u').value.trim(), password: $('#pw').value });
+  if (ok) boot(); else $('#err').textContent = data.error || 'Sign-in failed.';
+};
+$('#signOut').onclick = async () => { await send(SA('/auth/logout'), 'POST'); location.reload(); };
+$('#refresh').onclick = () => loadOverview();
+
+async function loadOverview() {
+  const { ok, data } = await api(SA('/overview'));
+  if (!ok) return boot();
+  const t = data.totals;
+  $('#totals').textContent = `${t.restaurants} restaurants · ${t.orders} orders · ${fmt(t.collected)} collected · ${t.awaitingCollection} awaiting collection · ${t.openAssists} open assistance requests`;
+  $('#rests').innerHTML = data.restaurants.length ? `<table class="dt"><thead><tr><th>Restaurant</th><th>Address</th><th class="num">Tables</th><th class="num">Dishes</th><th class="num">Orders</th><th class="num">Collected</th><th class="num">Awaiting</th><th></th></tr></thead><tbody>
+    ${data.restaurants.map(r => `<tr><td data-label="Restaurant"><strong>${esc(r.name)}</strong><br><span class="muted">${new Date(r.createdAt).toLocaleDateString()}</span></td>
+      <td data-label="Address">/r/${esc(r.slug)}</td><td class="num" data-label="Tables">${r.tables}</td><td class="num" data-label="Dishes">${r.menuItems}</td>
+      <td class="num" data-label="Orders">${r.orders}</td><td class="num" data-label="Collected">${fmt(r.collected)}</td><td class="num" data-label="Awaiting">${r.awaitingCollection}</td>
+      <td><button class="btn small secondary" type="button" data-view="${esc(r.slug)}">Manage</button></td></tr>`).join('')}</tbody></table>`
+    : '<div class="empty-row">No restaurants yet. The first signup will appear here.</div>';
+  if (current) openDetail(current, true);
+}
+$('#rests').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) openDetail(b.dataset.view); });
+
+async function openDetail(slug, keep) {
+  const { ok, data } = await api(SA('/restaurants/' + encodeURIComponent(slug)));
+  if (!ok) { if (!keep) alert('Could not load that restaurant.'); return; }
+  current = slug;
+  $('#detailSec').hidden = false;
+  $('#dName').textContent = data.name;
+  $('#dMeta').textContent = `/r/${data.slug} · ${data.tables} tables · ${data.menuItems} dishes · ${data.orders} orders · ${fmt(data.collected)} collected`;
+  $('#dVisit').href = '/r/' + slug;
+  $('#dStaff').innerHTML = `<h3 style="margin-top:0">Staff accounts</h3>` + (data.staff.length
+    ? data.staff.map(a => `<div class="row" style="justify-content:space-between;padding:6px 0"><span><b>${esc(a.username)}</b> <span class="badge plain">${esc(a.role)}</span></span><button class="btn small secondary" type="button" data-reset="${esc(a.username)}">Reset password</button></div>`).join('')
+    : '<p class="muted">No staff accounts.</p>');
+  $('#dOrders').innerHTML = data.orders.length ? `<table class="dt"><thead><tr><th>Order</th><th>Table</th><th>Items</th><th class="num">Total</th><th>Collection</th><th>Status</th></tr></thead><tbody>
+    ${data.orders.map(o => `<tr><td data-label="Order"><span class="id">${esc(o.id)}</span><br><span class="muted">${new Date(o.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></td>
+      <td data-label="Table">${esc(o.tableLabel)}</td><td data-label="Items" class="items">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join('<br>')}</td>
+      <td class="num" data-label="Total">${fmt(o.total)}</td>
+      <td data-label="Collection">${o.payment?.state === 'paid' ? 'Collected' : `<button class="btn small secondary" type="button" data-confirm="${esc(o.id)}">Confirm collected</button>`}</td>
+      <td data-label="Status"><span class="badge ${esc(o.status)}">${esc(o.status)}</span></td></tr>`).join('')}</tbody></table>`
+    : '<div class="empty-row">No orders yet.</div>';
+  if (!keep) $('#detailSec').scrollIntoView({ behavior: 'smooth' });
+}
+$('#dStaff').addEventListener('click', async e => {
+  const b = e.target.closest('[data-reset]'); if (!b) return;
+  const pw = prompt(`New password for ${b.dataset.reset} (at least 8 characters):`);
+  if (!pw) return;
+  const { ok, data } = await send(SA('/restaurants/' + encodeURIComponent(current) + '/staff/' + encodeURIComponent(b.dataset.reset) + '/reset-password'), 'POST', { password: pw });
+  alert(ok ? `Password reset for ${b.dataset.reset}.` : (data.error || 'Reset failed.'));
+});
+$('#dOrders').addEventListener('click', async e => {
+  const b = e.target.closest('[data-confirm]'); if (!b) return;
+  b.disabled = true;
+  const { ok } = await send(SA('/restaurants/' + encodeURIComponent(current) + '/orders/' + encodeURIComponent(b.dataset.confirm) + '/confirm-payment'), 'POST');
+  if (ok) loadOverview(); else { b.disabled = false; alert('Could not confirm collection.'); }
+});
+$('#dDelete').onclick = async () => {
+  if (!current) return;
+  const typed = prompt(`This permanently deletes the restaurant, its menu, orders and staff accounts.\nType its address to confirm: ${current}`);
+  if (typed !== current) { if (typed) alert('Address did not match — nothing deleted.'); return; }
+  const { ok, data } = await api(SA('/restaurants/' + encodeURIComponent(current)), { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: typed }) });
+  if (ok) { current = null; $('#detailSec').hidden = true; loadOverview(); } else alert(data.error || 'Delete failed.');
+};
+boot();
+</script>
+</body>
+</html>

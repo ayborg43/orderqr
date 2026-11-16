@@ -33,6 +33,10 @@ starts empty — there is no demo restaurant and there are no default logins.
   as salted scrypt hashes. Managers edit the menu (add, edit, remove dishes, mark sold
   out), add or remove tables, rename the restaurant and set surcharges. Kitchen staff
   run orders and assistance requests. A manager can also open the kitchen screen.
+- **Super admin.** Set `SUPERADMIN_USER` / `SUPERADMIN_PASSWORD` and open `/superadmin`:
+  one platform login (its own cookie, never a restaurant session) that sees every
+  restaurant, order and collected total, confirms collections, resets any staff
+  password, and deletes restaurants (type-the-address confirmation). Unset = disabled.
 - **No default accounts.** Every login is created at signup for that restaurant only.
   The pre-launch demo tenant (`the-corner-table`) is deleted automatically on boot.
 - **Payments.** There is no payment in the app: a waiter collects the money in

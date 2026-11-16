@@ -3,6 +3,7 @@
   "rewrites": [
     { "source": "/signup", "destination": "/signup.html" },
     { "source": "/login", "destination": "/login.html" },
+    { "source": "/superadmin", "destination": "/superadmin.html" },
     { "source": "/r/:slug", "destination": "/restaurant.html" },
     { "source": "/r/:slug/guest", "destination": "/guest.html" },
     { "source": "/r/:slug/kitchen", "destination": "/kitchen.html" },
