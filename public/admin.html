@@ -79,7 +79,30 @@ UI.info.then(r => { $('#restName').textContent = r.name; document.title = 'Admin
 $('#homeLink').innerHTML = icon('home') + 'Overview'; $('#homeLink').href = '/r/' + UI.rid; $('#printBtn').innerHTML = icon('printer') + 'Print table cards'; $('#addDish').innerHTML = icon('plus') + 'Add dish'; $('#addTable').innerHTML = icon('plus') + 'Add table';
 $('#printBtn').onclick = () => window.print();
 
+/* --- Order status: managers can move an order through every state, forwards or back --- */
+const STATUS_FLOW = ['Received', 'Preparing', 'Ready', 'Served', 'Cancelled'];
+const NEXT = { Received: ['Preparing', 'Start preparing'], Preparing: ['Ready', 'Mark ready'], Ready: ['Served', 'Mark served'] };
+function statusCell(o) {
+  const badge = `<span class="badge ${esc(o.status)}">${esc(LABEL[o.status] || o.status)}</span>`;
+  if (!STATUS_FLOW.includes(o.status)) return badge; // e.g. a legacy failed-payment record
+  const next = NEXT[o.status];
+  return `<div class="stat">${badge}<div class="stat__act">
+    ${next ? `<button class="btn small" type="button" data-status="${esc(o.id)}" data-to="${next[0]}">${next[1]}</button>` : ''}
+    <select class="status-sel" data-order="${esc(o.id)}" aria-label="Set status for ${esc(o.id)}">${STATUS_FLOW.map(s => `<option value="${s}" ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+  </div></div>`;
+}
+async function setOrderStatus(id, to, revert) {
+  if (to === 'Cancelled' && !confirm('Cancel order ' + id + '? The guest will see it as cancelled.')) { revert && revert(); return; }
+  const { ok, status: code } = await send(UI.R('/orders/' + encodeURIComponent(id)), 'PATCH', { status: to });
+  if (code === 401) return location.reload();
+  if (!ok) { revert && revert(); alert('Could not change the status. Try again.'); return; }
+  load();
+}
+let ordersStale = false;
 function renderOrders() {
+  // Don't rebuild the table while someone has a status menu open: it would snap shut mid-choice.
+  if (document.activeElement?.matches?.('.status-sel')) { ordersStale = true; return; }
+  ordersStale = false;
   const count = (s) => allOrders.filter(o => !s || o.status === s).length;
   $('#statusFilter').innerHTML = FILTERS.filter(([s]) => !s || count(s) || s === status).map(([s, l]) => `<button class="chip" type="button" data-s="${s}" aria-pressed="${s === status}">${l}<span class="count">${count(s)}</span></button>`).join('');
   const full = allOrders.filter(o => !status || o.status === status);
@@ -91,12 +114,20 @@ function renderOrders() {
       <td data-label="Items" class="items">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join('<br>')}</td>
       <td data-label="Total" class="num">${fmt(o.total)}</td>
       <td data-label="Payment">${o.payment?.state === 'paid' ? `Collected<br><span class="muted">${o.payment.confirmedAt ? new Date(o.payment.confirmedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>` : `<button class="btn small secondary" type="button" data-confirm="${esc(o.id)}">Confirm collected</button>`}</td>
-      <td data-label="Status"><span class="badge ${esc(o.status)}">${esc(LABEL[o.status] || o.status)}</span></td></tr>`).join('')}</tbody></table>${full.length > list.length ? `<div class="more-orders"><button class="btn secondary" type="button" id="moreOrders">Show all ${full.length} orders</button></div>` : ''}`
+      <td data-label="Status">${statusCell(o)}</td></tr>`).join('')}</tbody></table>${full.length > list.length ? `<div class="more-orders"><button class="btn secondary" type="button" id="moreOrders">Show all ${full.length} orders</button></div>` : ''}`
     : `<div class="empty-row">${allOrders.length ? 'No orders with this status.' : 'No orders yet. Place one as a guest and it will show up here.'}</div>`;
 }
 $('#statusFilter').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; status = b.dataset.s; showAll = false; renderOrders(); });
+$('#ordersBox').addEventListener('change', e => {
+  const sel = e.target.closest('.status-sel'); if (!sel) return;
+  const prev = [...sel.options].find(o => o.defaultSelected)?.value;
+  sel.blur(); setOrderStatus(sel.dataset.order, sel.value, () => { sel.value = prev; });
+});
+$('#ordersBox').addEventListener('focusout', e => { if (e.target.matches?.('.status-sel') && ordersStale) setTimeout(renderOrders, 150); });
 $('#ordersBox').addEventListener('click', async e => {
   if (e.target.closest('#moreOrders')) { showAll = true; renderOrders(); return; }
+  const st = e.target.closest('[data-status]');
+  if (st) { st.disabled = true; setOrderStatus(st.dataset.status, st.dataset.to, () => { st.disabled = false; }); return; }
   const c = e.target.closest('[data-confirm]'); if (!c) return;
   c.disabled = true;
   const { ok } = await send(UI.R('/orders/' + encodeURIComponent(c.dataset.confirm) + '/confirm-payment'), 'POST');
