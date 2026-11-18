@@ -169,11 +169,25 @@ function saveStore() {
 }
 
 // --- live events (SSE), kept apart per restaurant ---
-const clients = new Map(); // slug -> Set<res>
+const clients = new Map(); // slug -> Set<res>  (staff screens)
+const tableClients = new Map(); // "slug|tableId" -> Set<res>  (guests watching their own table)
 function broadcast(slug, event, data) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  const set = clients.get(slug); if (!set) return;
-  for (const res of set) { try { res.write(msg); } catch { set.delete(res); } }
+  const set = clients.get(slug);
+  if (set) for (const res of set) { try { res.write(msg); } catch { set.delete(res); } }
+  // Guests only learn that one of their table's orders changed; they re-fetch it themselves.
+  if (event === "order" && data?.tableId) {
+    const tset = tableClients.get(`${slug}|${data.tableId}`);
+    if (tset) { const m = `event: order\ndata: ${JSON.stringify({ id: data.id, status: data.status })}\n\n`; for (const res of tset) { try { res.write(m); } catch { tset.delete(res); } } }
+  }
+}
+// Open an event stream. Pings keep idle connections alive through proxies (Traefik, nginx).
+function openStream(req, res, set) {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+  res.write(`retry: 3000\nevent: ready\ndata: {}\n\n`);
+  set.add(res);
+  const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 20000);
+  req.on("close", () => { clearInterval(ping); set.delete(res); });
 }
 
 const STATUSES = ["Received", "Preparing", "Ready", "Served", "Cancelled"];
@@ -273,7 +287,7 @@ const recentSignups = (ip) => (signups.get(ip) || []).filter((t) => Date.now() -
 const signupThrottled = (ip) => recentSignups(ip).length >= 5;
 function noteSignup(ip) { if (signups.size > 5000) signups.clear(); signups.set(ip, [...recentSignups(ip), Date.now()]); }
 
-const json = (res, code, body) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
+const json = (res, code, body) => { res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify(body)); };
 async function bodyJson(req) {
   let s = "";
   for await (const c of req) { s += c; if (s.length > 100_000) { const e = new Error("Request too large"); e.status = 413; throw e; } }
@@ -662,11 +676,18 @@ async function handleRestaurantApi(req, res, url, rest, p) {
 
   if (req.method === "GET" && p === "/events") {
     if (!staffOnly()) return;
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-    res.write(`event: ready\ndata: {}\n\n`);
     if (!clients.has(slug)) clients.set(slug, new Set());
-    clients.get(slug).add(res);
-    req.on("close", () => clients.get(slug)?.delete(res)); return;
+    return openStream(req, res, clients.get(slug));
+  }
+  // Public live feed for one table: pushes {id,status} whenever one of its orders changes.
+  if (req.method === "GET" && p === "/table-events") {
+    const table = rest.tables.find((t) => t.id === String(url.searchParams.get("table") || ""));
+    if (!table) return json(res, 400, { error: "Invalid table" });
+    const key = `${slug}|${table.id}`;
+    if (!tableClients.has(key)) tableClients.set(key, new Set());
+    const set = tableClients.get(key);
+    if (set.size >= 30) return json(res, 429, { error: "Too many open connections for this table" });
+    return openStream(req, res, set);
   }
   return json(res, 404, { error: "Not found" });
 }

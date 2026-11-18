@@ -264,14 +264,22 @@ function orderCard(o) {
     ${cancelled ? `<div class="cancelled">${icon('alert')}<span>The kitchen couldn’t make this order. Please call staff — they’ll sort it out with you.</span></div>`
       : `<ol class="track ${o.status === 'Ready' ? 'ready' : ''}" aria-label="Order progress: ${esc(o.status)}">${STEPS.map((s, n) => `<li class="${n < idx ? 'done' : n === idx ? 'done now' : ''}">${s}</li>`).join('')}</ol>`}</article>`;
 }
+let loadingOrders = false, reloadOrders = false;
 async function loadOrders() {
   if (!tableId) return;
-  const paid = await tableOrders();
-  for (const o of paid) {
-    if (seenStatus[o.id] && seenStatus[o.id] !== o.status && o.status === 'Ready') toast(`<strong>Order ${esc(o.id)} is ready</strong><br>It’s on its way to your table.`, 'ok');
-    seenStatus[o.id] = o.status;
-  }
-  $('#myOrders').innerHTML = paid.length ? `<h2>Your orders at this table</h2>` + paid.slice().reverse().map(orderCard).join('') : '';
+  if (loadingOrders) { reloadOrders = true; return; } // never overlap; run once more afterwards
+  loadingOrders = true;
+  try {
+    const { ok, data } = await UI.api(UI.R('/orders?table=') + encodeURIComponent(tableId));
+    if (!ok) return; // keep what is on screen if the request failed
+    const paid = data.orders || [];
+    for (const o of paid) {
+      if (seenStatus[o.id] && seenStatus[o.id] !== o.status && o.status === 'Ready') toast(`<strong>Order ${esc(o.id)} is ready</strong><br>It’s on its way to your table.`, 'ok');
+      seenStatus[o.id] = o.status;
+    }
+    $('#myOrders').innerHTML = paid.length ? `<h2>Your orders at this table</h2>` + paid.slice().reverse().map(orderCard).join('') : '';
+  } catch { /* offline: try again on the next tick */ }
+  finally { loadingOrders = false; if (reloadOrders) { reloadOrders = false; loadOrders(); } }
 }
 $('#viewBill').onclick = async () => {
   const paid = (await tableOrders()).filter(o => o.status !== 'Cancelled');
@@ -288,7 +296,22 @@ $('#callStaff').onclick = async () => {
   const { ok } = await send(UI.R('/assist'), 'POST', { tableId });
   toast(ok ? '<strong>Staff are on their way</strong><br>Someone will come to your table shortly.' : 'Could not notify staff — please flag down a team member.', ok ? 'ok' : 'err');
 };
-setInterval(loadOrders, 5000);
+/* Live updates: the server pushes a note the moment staff change one of this table's orders.
+   Polling is only a safety net (fast when the live connection is down, slow otherwise). */
+let live = false;
+function connectLive() {
+  if (!tableId || !window.EventSource) return;
+  const es = new EventSource(UI.R('/table-events?table=') + encodeURIComponent(tableId));
+  es.addEventListener('ready', () => { live = true; loadOrders(); });
+  es.addEventListener('order', () => loadOrders());
+  es.onerror = () => { live = false; }; // the browser reconnects by itself
+}
+setInterval(() => { if (!document.hidden && !live) loadOrders(); }, 5000);
+setInterval(() => { if (!document.hidden) loadOrders(); }, 30000);
+// Phones freeze timers and connections in the background: catch up as soon as the page is back.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadOrders(); });
+addEventListener('pageshow', loadOrders); addEventListener('online', loadOrders);
+connectLive();
 load();
 </script>
 </body>

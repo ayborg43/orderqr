@@ -109,3 +109,31 @@ test("a malformed Host header does not crash the server", async () => {
   });
   assert.equal((await req("GET", `${API}/tables`)).status, 200);
 });
+
+test("guests get a live push when staff change their table's order status", async () => {
+  const placed = await post("/orders", { tableId: "7", idempotencyKey: "live-1", items: [{ menuItemId: "fries", qty: 1 }] });
+  assert.equal(placed.status, 201);
+  const id = placed.body.order.id;
+  const ac = new AbortController();
+  const res = await fetch(`${srv.base}${API}/table-events?table=7`, { signal: ac.signal });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type"), /text\/event-stream/);
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  const until = async (re) => { const t = Date.now(); while (!re.test(buf)) { if (Date.now() - t > 4000) throw new Error("no event: " + re + " in " + JSON.stringify(buf)); const { value, done } = await reader.read(); if (done) break; buf += dec.decode(value); } };
+  try {
+    await until(/event: ready/);
+    await patch(`/orders/${id}`, { status: "Preparing" });
+    await until(new RegExp(`"id":"${id}","status":"Preparing"`));
+    // Another table's changes are not delivered here.
+    const other = await post("/orders", { tableId: "8", idempotencyKey: "live-2", items: [{ menuItemId: "fries", qty: 1 }] });
+    buf = ""; await patch(`/orders/${other.body.order.id}`, { status: "Ready" });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!buf.includes(other.body.order.id), "table 7 must not see table 8's orders");
+  } finally { ac.abort(); }
+});
+
+test("the live feed rejects unknown tables and API responses are never cached", async () => {
+  assert.equal((await fetch(`${srv.base}${API}/table-events?table=999`)).status, 400);
+  assert.equal((await fetch(`${srv.base}${API}/menu`)).headers.get("cache-control"), "no-store");
+});
