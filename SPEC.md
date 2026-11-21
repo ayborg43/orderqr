@@ -74,6 +74,9 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - S4. Staff sessions are bound to the account's password and the restaurant's identity.
 - S5. The service charge defaults to 0%.
 - S6. Staff order lists are paged (kitchen: unfinished only; admin: unfinished plus 24h, older on demand).
+- S8. An account locks for 15 minutes after 10 wrong passwords from any addresses; unknown usernames lock the same way. The platform login too.
+- S9. Non-GET API requests that browsers mark as cross-site or cross-origin are refused (403).
+- S10. Live feeds are re-validated every 20 seconds and closed when access is revoked, a QR code is replaced, or a restaurant is deleted.
 - S7. Postgres stores one row per order; only changed rows are written; a single-writer lock prevents two instances overwriting each other; failed writes surface as 503 and are retried.
 
 ## 5. Non-functional

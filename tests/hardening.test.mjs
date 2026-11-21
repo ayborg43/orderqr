@@ -397,3 +397,109 @@ test("receipts print times in Lagos time, not the server's", async () => {
     assert.ok(!/1 Mar 2026, 23:30/.test(html), "not the UTC time");
   } finally { s.stop(); }
 });
+
+/* ======================= round three: lockout, cross-origin writes, revoked streams ======================= */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rawPost = (port, p, { headers = {}, body = "{}" } = {}) => new Promise((resolve, reject) => {
+  const r = http.request({ host: "localhost", port, path: p, method: "POST", headers: { "Content-Length": Buffer.byteLength(body), ...headers } }, (res) => {
+    const chunks = []; res.on("data", (c) => chunks.push(c)); res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }));
+  });
+  r.on("error", reject); r.end(body);
+});
+
+test("many addresses guessing one account get it locked, without revealing which accounts exist", async () => {
+  const s = await startServer(3248, { env: { TRUST_PROXY: "1", LOGIN_LOCK_MS: "1500" } });
+  try {
+    const attempt = (user, pass, i) => fetch(`${s.base}/api/r/${REST}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": `203.0.113.${i}` }, body: JSON.stringify({ username: user, password: pass }) }).then((r) => r.status);
+    const first = []; for (let i = 1; i <= 12; i++) first.push(await attempt("admin", "wrong" + i, i)); // a different address every time
+    assert.deepEqual(first, [401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 429, 429], "locked after 10 failures from any addresses");
+    assert.equal(await attempt("admin", "admin123", 50), 429, "even the right password is refused while locked");
+    assert.equal(await attempt("kitchen", "kitchen123", 51), 200, "other accounts are unaffected");
+    const ghost = []; for (let i = 60; i < 72; i++) ghost.push(await attempt("nobody", "x" + i, i));
+    assert.deepEqual(ghost.slice(10), [429, 429], "an account that does not exist locks the same way, so the reply leaks nothing");
+    await sleep(1700);
+    assert.equal(await attempt("admin", "admin123", 80), 200, "it unlocks after the window");
+    const more = []; for (let i = 90; i < 99; i++) more.push(await attempt("admin", "bad" + i, i));
+    assert.ok(more.every((c) => c === 401), "a successful sign-in resets the count");
+  } finally { s.stop(); }
+});
+
+test("the platform login locks the same way", async () => {
+  const s = await startServer(3249, { env: { TRUST_PROXY: "1", LOGIN_LOCK_MS: "1500", SUPERADMIN_USER: "root", SUPERADMIN_PASSWORD: "platform-secret-1", SESSION_SECRET: "x-secret" } });
+  try {
+    const attempt = (pass, i) => fetch(`${s.base}/api/superadmin/auth/login`, { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": `198.51.100.${i}` }, body: JSON.stringify({ username: "root", password: pass }) }).then((r) => r.status);
+    for (let i = 1; i <= 10; i++) assert.equal(await attempt("nope" + i, i), 401);
+    assert.equal(await attempt("platform-secret-1", 40), 429);
+    await sleep(1700);
+    assert.equal(await attempt("platform-secret-1", 41), 200);
+  } finally { s.stop(); }
+});
+
+test("state-changing requests from another origin are refused, own pages and plain tools are not", async () => {
+  const body = JSON.stringify({ items: [{ menuItemId: "fries", qty: 1 }] });
+  const post = (headers) => rawPost(3230, `${API}/orders/preview`, { headers: { "Content-Type": "application/json", ...headers }, body });
+  assert.equal((await post({})).status, 200, "curl-style call with no browser headers");
+  assert.equal((await post({ "Sec-Fetch-Site": "same-origin" })).status, 200);
+  assert.equal((await post({ "Sec-Fetch-Site": "none" })).status, 200);
+  assert.equal((await post({ Origin: "http://localhost:3230" })).status, 200, "Origin equal to our own host");
+  for (const h of [{ "Sec-Fetch-Site": "same-site" }, { "Sec-Fetch-Site": "cross-site" }, { Origin: "https://evil.propertypadi.com" }, { Origin: "null" }, { "Sec-Fetch-Site": "same-origin", Origin: "https://evil.example" }]) {
+    const r = await post(h);
+    assert.equal(r.status, 403, JSON.stringify(h)); assert.equal(JSON.parse(r.body).code, "CROSS_SITE");
+  }
+  // The dangerous case: a manager's cookie attached to a request that another site triggered.
+  const placed = await req("POST", `${API}/orders`, { body: { ...srv.k("9"), items: [{ menuItemId: "fries", qty: 1 }] } });
+  const id = placed.body.order.id;
+  const attack = await rawPost(3230, `${API}/orders/${id}/confirm-payment`, { headers: { Cookie: srv.cookie, "Sec-Fetch-Site": "cross-site", Origin: "https://evil.example" } });
+  assert.equal(attack.status, 403);
+  assert.equal((await req("GET", `${API}/orders?scope=open`, { cookie: srv.cookie })).body.orders.find((o) => o.id === id).payment.state, "awaiting-collection", "nothing changed");
+  const real = await rawPost(3230, `${API}/orders/${id}/confirm-payment`, { headers: { Cookie: srv.cookie, "Sec-Fetch-Site": "same-origin", Origin: "http://localhost:3230" } });
+  assert.equal(real.status, 200, "the same call from our own page works");
+  // Reads from other origins stay allowed (links opened from elsewhere).
+  const get = await new Promise((resolve, reject) => http.get({ host: "localhost", port: 3230, path: "/", headers: { "Sec-Fetch-Site": "cross-site" } }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject));
+  assert.equal(get, 200);
+});
+
+test("the configured public address counts as our own origin even if the proxy rewrites Host", async () => {
+  const s = await startServer(3252, { env: { PUBLIC_BASE_URL: "https://orders.example.com" } });
+  try {
+    const body = JSON.stringify({ items: [{ menuItemId: "fries", qty: 1 }] });
+    const ok = await rawPost(3252, `${API}/orders/preview`, { headers: { "Content-Type": "application/json", Origin: "https://orders.example.com", Host: "internal-container:3000" }, body });
+    assert.equal(ok.status, 200);
+    const bad = await rawPost(3252, `${API}/orders/preview`, { headers: { "Content-Type": "application/json", Origin: "https://evil.example", Host: "internal-container:3000" }, body });
+    assert.equal(bad.status, 403);
+  } finally { s.stop(); }
+});
+
+test("live feeds close when staff access is revoked or a table's code is replaced", async () => {
+  const closed = async (res, ms = 3000) => {
+    const reader = res.body.getReader(), t = Date.now();
+    try { for (;;) { const r = await Promise.race([reader.read(), sleep(ms).then(() => ({ timeout: true }))]); if (r.timeout) return false; if (r.done) return true; } } catch { return true; }
+  };
+  const s = await signup("Revoked Feed", "feeder");
+  const mgr = cookieOf(s.cookie), K = await keysOf("revoked-feed", mgr);
+  // 1. a staff screen's stream ends when that restaurant's staff password is reset
+  const staff = await fetch(`${srv.base}/api/r/revoked-feed/events`, { headers: { Cookie: mgr } });
+  assert.equal(staff.status, 200);
+  const staffClosed = closed(staff);
+  await sleep(200);
+  assert.equal((await req("POST", "/api/r/revoked-feed/tables/1/rotate-key", { cookie: mgr })).status, 200);
+  await req("POST", "/api/superadmin/restaurants/revoked-feed/staff/feeder/reset-password", { cookie: saCookie, body: { password: "after-reset-pass-1" } });
+  assert.equal(await staffClosed, true, "the stream was closed");
+  assert.equal((await fetch(`${srv.base}/api/r/revoked-feed/events`, { headers: { Cookie: mgr } })).status, 401, "and the old session cannot reopen it");
+  // 2. a guest's stream ends when the table's QR code is replaced
+  const mgr2 = cookieOf((await req("POST", "/api/r/revoked-feed/auth/login", { body: { username: "feeder", password: "after-reset-pass-1" } })).cookie);
+  const key2 = (await keysOf("revoked-feed", mgr2))["2"];
+  const guest = await fetch(`${srv.base}/api/r/revoked-feed/table-events?table=2&k=${key2}`);
+  assert.equal(guest.status, 200);
+  const guestClosed = closed(guest);
+  await sleep(200);
+  await req("POST", "/api/r/revoked-feed/tables/2/rotate-key", { cookie: mgr2 });
+  assert.equal(await guestClosed, true, "the guest feed for the old code was closed");
+  assert.equal((await fetch(`${srv.base}/api/r/revoked-feed/table-events?table=2&k=${key2}`)).status, 400, "the old code cannot reconnect");
+  // 3. deleting the restaurant ends every stream
+  const staff2 = await fetch(`${srv.base}/api/r/revoked-feed/events`, { headers: { Cookie: mgr2 } });
+  const staff2Closed = closed(staff2);
+  await sleep(200);
+  assert.equal((await req("DELETE", "/api/superadmin/restaurants/revoked-feed", { cookie: saCookie, body: { confirm: "revoked-feed" } })).status, 200);
+  assert.equal(await staff2Closed, true);
+});

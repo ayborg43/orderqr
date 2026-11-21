@@ -66,6 +66,20 @@ starts empty — there is no demo restaurant and there are no default logins.
 - **Sessions** are bound to the account they were issued for: resetting a password,
   or deleting and re-registering an address, ends every old session. (Sessions issued
   before this change stop working once, so staff sign in again after the upgrade.)
+- **Sign-in lockout.** Besides the per-address limit (8 wrong passwords per address per
+  5 minutes), an account locks for 15 minutes after 10 wrong passwords from any addresses
+  (`LOGIN_MAX_FAILS`, `LOGIN_LOCK_MS`), so a botnet cannot guess one manager's password.
+  While locked even the right password is refused, and unknown usernames lock the same way,
+  so the reply never reveals whether an account exists. The platform login behaves the same.
+  If a legitimate user is locked out, they wait it out; there is nothing to reset.
+- **Cross-site protection.** State-changing API calls (anything but GET) are refused with 403
+  when the browser says they came from another site: `Sec-Fetch-Site` other than
+  `same-origin`/`none`, or an `Origin` that is not this site (or `PUBLIC_BASE_URL`). This
+  matters because other subdomains of the same domain count as "same site" for cookies.
+  curl and other tools that send neither header are unaffected.
+- **Live feeds follow access.** A staff screen's feed is re-checked every 20 seconds and
+  closed when the session expires or is revoked. Resetting a staff password, replacing a
+  table's QR code, removing a table or deleting a restaurant closes the affected feeds at once.
 - In production (`NODE_ENV=production`) the server refuses to start without
   `SESSION_SECRET` and `PUBLIC_BASE_URL`.
 - **Transport.** Static files and JSON replies over 1 KB are brotli/gzip compressed;

@@ -294,7 +294,10 @@ function broadcast(slug, event, data) {
 const STREAM_CAPS = { perIp: parseInt(process.env.STREAMS_PER_IP, 10) || 600, perIpRest: parseInt(process.env.STREAMS_PER_IP_RESTAURANT, 10) || 300, total: parseInt(process.env.MAX_STREAMS, 10) || 5000 };
 const streamCount = { total: 0, ip: new Map(), ipRest: new Map() };
 const bump = (m, k, d) => { const n = (m.get(k) || 0) + d; if (n <= 0) m.delete(k); else m.set(k, n); };
-function openStream(req, res, set, slug) {
+// `stillAllowed` (staff streams) is re-checked on every ping, so a session that expired or was revoked loses its feed
+// within 20 seconds even if nobody closes it explicitly. endAll() closes a group of streams at once.
+const endAll = (set) => { if (set) for (const r of [...set]) { try { r.end(); } catch {} } };
+function openStream(req, res, set, slug, stillAllowed) {
   const ip = clientIp(req), k2 = `${ip}|${slug}`;
   if (streamCount.total >= STREAM_CAPS.total || (streamCount.ip.get(ip) || 0) >= STREAM_CAPS.perIp || (streamCount.ipRest.get(k2) || 0) >= STREAM_CAPS.perIpRest)
     return tooMany(res, "Too many live connections from this address. Close some tabs and try again.", 30);
@@ -302,7 +305,9 @@ function openStream(req, res, set, slug) {
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
   res.write(`retry: 3000\nevent: ready\ndata: {}\n\n`);
   set.add(res);
-  const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 20000);
+  const ping = setInterval(() => {
+    try { if (stillAllowed && !stillAllowed()) return res.end(); res.write(": ping\n\n"); } catch {}
+  }, 20000);
   let closed = false;
   req.on("close", () => {
     if (closed) return; closed = true;
@@ -419,6 +424,24 @@ function noteLoginFail(ip, slug) {
   const k = failKey(ip, slug), rec = loginFails.get(k) || { count: 0, until: 0 };
   rec.count += 1; rec.until = Date.now() + 5 * 60 * 1000; loginFails.set(k, rec);
 }
+// Account lockout. The per-address limit above stops one machine; this stops many machines guessing one account.
+// After LOGIN_MAX_FAILS wrong passwords (any addresses) inside the window the account refuses every attempt, even the
+// right password, until LOGIN_LOCK_MS passes. Unknown usernames are counted the same way, so a locked reply does not
+// reveal whether an account exists.
+const LOGIN_MAX_FAILS = parseInt(process.env.LOGIN_MAX_FAILS, 10) || 10, LOGIN_LOCK_MS = parseInt(process.env.LOGIN_LOCK_MS, 10) || 15 * 60e3;
+const acctFails = new Map(); // "scope|username" -> { n, first, lockedUntil }
+const acctKey = (scope, username) => `${scope}|${String(username || "").trim().toLowerCase().slice(0, 64)}`;
+const accountLocked = (scope, username) => { const r = acctFails.get(acctKey(scope, username)); return !!r && r.lockedUntil > Date.now(); };
+function noteAccountFail(scope, username) {
+  if (acctFails.size > 5000) acctFails.clear();
+  const k = acctKey(scope, username), now = Date.now();
+  let r = acctFails.get(k);
+  if (!r || (r.lockedUntil && r.lockedUntil <= now) || now - r.first > LOGIN_LOCK_MS) r = { n: 0, first: now, lockedUntil: 0 };
+  if (++r.n >= LOGIN_MAX_FAILS) r.lockedUntil = now + LOGIN_LOCK_MS;
+  acctFails.set(k, r);
+}
+const clearAccountFails = (scope, username) => acctFails.delete(acctKey(scope, username));
+const LOCKED_MSG = "Too many failed sign-ins for this account. Try again in a few minutes.";
 // Signup throttle: 5 new restaurants per IP per hour.
 const signups = new Map();
 const recentSignups = (ip) => (signups.get(ip) || []).filter((t) => Date.now() - t < 3600e3);
@@ -449,6 +472,20 @@ const json = (res, code, body, headers) => {
   }
   res.writeHead(code, { ...h, "Content-Length": buf.length }); res.end(buf);
 };
+// State-changing API calls must come from our own pages. Browsers label every request: a call made by another
+// site (or another subdomain of the same domain, which SameSite cookies still treat as "same site") says so in
+// Sec-Fetch-Site and Origin, and is refused. Plain tools such as curl send neither header and are unaffected,
+// and they cannot ride on a victim's cookies anyway.
+const OWN_HOSTS = new Set([String(process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "").replace(/^https?:\/\//, "")].filter(Boolean));
+function fromOwnPage(req) {
+  const site = req.headers["sec-fetch-site"];
+  if (site && site !== "same-origin" && site !== "none") return false;
+  const origin = req.headers.origin;
+  if (origin) {
+    try { const host = new URL(origin).host; if (host !== req.headers.host && !OWN_HOSTS.has(host)) return false; } catch { return false; }
+  }
+  return true;
+}
 const tooMany = (res, msg, retry = 60) => json(res, 429, { error: msg }, { "Retry-After": String(retry) });
 async function bodyJson(req) {
   let s = "";
@@ -578,11 +615,11 @@ async function handleSuperadmin(req, res, url) {
   if (req.method === "POST" && p === "/api/superadmin/auth/login") {
     if (!SUPERADMIN.username || !SUPERADMIN.password) return json(res, 503, { error: "Super admin is not configured. Set SUPERADMIN_USER and SUPERADMIN_PASSWORD." });
     const ip = clientIp(req);
-    if (loginThrottled(ip, "__platform__")) return json(res, 429, { error: "Too many failed sign-ins. Try again in a few minutes." });
     const b = await bodyJson(req);
+    if (loginThrottled(ip, "__platform__") || accountLocked("__platform__", SUPERADMIN.username)) return tooMany(res, LOCKED_MSG, Math.ceil(LOGIN_LOCK_MS / 1000));
     const ok = safeEq(String(b.username || ""), SUPERADMIN.username) & safeEq(String(b.password || ""), SUPERADMIN.password);
-    if (!ok) { noteLoginFail(ip, "__platform__"); return json(res, 401, { error: "Wrong username or password" }); }
-    loginFails.delete(failKey(ip, "__platform__"));
+    if (!ok) { noteLoginFail(ip, "__platform__"); noteAccountFail("__platform__", SUPERADMIN.username); return json(res, 401, { error: "Wrong username or password" }); }
+    loginFails.delete(failKey(ip, "__platform__")); clearAccountFails("__platform__", SUPERADMIN.username);
     const payload = b64url(JSON.stringify({ u: SUPERADMIN.username, r: "superadmin", f: superFingerprint(), exp: Date.now() + SESSION_MS }));
     res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": superCookie(req, `${payload}.${signPayload(payload)}`, SESSION_MS / 1000) });
     return res.end(JSON.stringify({ user: SUPERADMIN.username, role: "superadmin" }));
@@ -616,8 +653,8 @@ async function handleSuperadmin(req, res, url) {
   if (req.method === "DELETE" && sub === "/") {
     const b = await bodyJson(req);
     if (b.confirm !== rest.slug) return json(res, 400, { error: `Type the restaurant address (${rest.slug}) to confirm deletion.` });
-    delete store.restaurants[rest.slug]; clients.delete(rest.slug); markDeleted(rest.slug);
-    for (const k of [...tableClients.keys()]) if (k.startsWith(rest.slug + "|")) tableClients.delete(k);
+    delete store.restaurants[rest.slug]; endAll(clients.get(rest.slug)); clients.delete(rest.slug); markDeleted(rest.slug);
+    for (const k of [...tableClients.keys()]) if (k.startsWith(rest.slug + "|")) { endAll(tableClients.get(k)); tableClients.delete(k); }
     await saveStore();
     return json(res, 200, { ok: true, deleted: rest.slug });
   }
@@ -629,6 +666,7 @@ async function handleSuperadmin(req, res, url) {
     if (String(b.password || "").length < 8 || String(b.password).length > 200) return json(res, 400, { error: "Password must be at least 8 characters." });
     acct.hash = await hashPassword(b.password); // also ends that account's existing sessions
     await persist(rest);
+    endAll(clients.get(rest.slug)); // ...and closes the staff screens' live feeds; they reconnect only if still signed in
     return json(res, 200, { ok: true, username: acct.username, role: acct.role });
   }
   const confirm = sub.match(/^\/orders\/([\w-]+)\/confirm-payment$/);
@@ -706,12 +744,12 @@ async function handleRestaurantApi(req, res, url, rest, p) {
 
   // --- auth ---
   if (req.method === "POST" && p === "/auth/login") {
-    if (loginThrottled(ip, slug)) return tooMany(res, "Too many failed sign-ins. Try again in a few minutes.", 300);
     const b = await bodyJson(req);
+    if (loginThrottled(ip, slug) || accountLocked(slug, b.username)) return tooMany(res, LOCKED_MSG, Math.ceil(LOGIN_LOCK_MS / 1000));
     const acct = rest.staff.find((a) => a.username.toLowerCase() === String(b.username || "").trim().toLowerCase());
     const ok = (await checkPassword(b.password || "", acct ? acct.hash : DUMMY_HASH)) && !!acct;
-    if (!ok) { noteLoginFail(ip, slug); return json(res, 401, { error: "Wrong username or password" }); }
-    loginFails.delete(failKey(ip, slug));
+    if (!ok) { noteLoginFail(ip, slug); noteAccountFail(slug, b.username); return json(res, 401, { error: "Wrong username or password" }); }
+    loginFails.delete(failKey(ip, slug)); clearAccountFails(slug, b.username);
     res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession(acct, rest), SESSION_MS / 1000) });
     return res.end(JSON.stringify({ user: acct.username, role: acct.role }));
   }
@@ -902,14 +940,16 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     const before = rest.tables.length; rest.tables = rest.tables.filter((t) => t.id !== tableMatch[1]);
     if (rest.tables.length === before) return json(res, 404, { error: "Table not found" });
     delete rest.sessions?.[tableMatch[1]];
-    await persist(rest); return json(res, 200, { ok: true });
+    await persist(rest); endAll(tableClients.get(`${slug}|${tableMatch[1]}`));
+    return json(res, 200, { ok: true });
   }
   // New secret for a table's QR code (also upgrades older keyless tables). The old printed code stops working.
   const rotate = p.match(/^\/tables\/([\w-]+)\/rotate-key$/);
   if (req.method === "POST" && rotate) {
     if (!staffOnly(["manager"])) return;
     const t = rest.tables.find((x) => x.id === rotate[1]); if (!t) return json(res, 404, { error: "Table not found" });
-    t.key = newKey(); delete rest.sessions?.[t.id]; await persist(rest); notifyTable(slug, t.id);
+    t.key = newKey(); delete rest.sessions?.[t.id]; await persist(rest);
+    endAll(tableClients.get(`${slug}|${t.id}`)); // guests holding the old printed code lose the live feed
     return json(res, 200, { table: t });
   }
   // End the current visit: the next diner starts with an empty order list and bill.
@@ -941,7 +981,7 @@ async function handleRestaurantApi(req, res, url, rest, p) {
   if (req.method === "GET" && p === "/events") {
     if (!staffOnly()) return;
     if (!clients.has(slug)) clients.set(slug, new Set());
-    return openStream(req, res, clients.get(slug), slug);
+    return openStream(req, res, clients.get(slug), slug, () => !!staffFromReq(req, store.restaurants[slug] || { slug, staff: [], createdAt: "" }));
   }
   // Guest live feed for one table: pushes {id,status} whenever one of its orders changes.
   if (req.method === "GET" && p === "/table-events") {
@@ -1030,6 +1070,8 @@ export async function appHandler(req, res) {
   res.acceptsGzip = /\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""));
   securityHeaders(req, res, url);
   try {
+    if (url.pathname.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(req.method) && !fromOwnPage(req))
+      return json(res, 403, { error: "Cross-site request blocked", code: "CROSS_SITE" });
     if (url.pathname === "/health" || url.pathname === "/api/health") {
       if (shuttingDown) return json(res, 503, { status: "shutting-down" });
       if (pool) {
