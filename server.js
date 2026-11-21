@@ -326,7 +326,7 @@ function priceOrder(rest, rawItems) {
   for (const raw of rawItems) {
     if (!raw || typeof raw !== "object") return { error: "Invalid basket item" };
     const menuItem = rest.menu.find((m) => m.id === raw.menuItemId);
-    if (!menuItem) return { error: `Unknown item: ${String(raw.menuItemId).slice(0, 60)}` };
+    if (!menuItem) return { error: "That dish is no longer on the menu", unknownItem: String(raw.menuItemId).slice(0, 60) };
     if (!menuItem.available) return { error: `Sold out: ${menuItem.name}`, soldOut: menuItem.id };
     const qty = Math.max(1, Math.min(20, parseInt(raw.qty, 10) || 1));
     let unit = menuItem.price;
@@ -441,6 +441,26 @@ function noteAccountFail(scope, username) {
   acctFails.set(k, r);
 }
 const clearAccountFails = (scope, username) => acctFails.delete(acctKey(scope, username));
+// A browser that has signed in to an account before carries a signed "known device" cookie for it. The lockout does not
+// apply to that browser (the password is still required, and the per-address limit still applies), so someone who merely
+// knows a username cannot shut the real user out by guessing against it.
+const DEVICE_MS = 90 * 86400e3;
+const deviceCookieName = (scope) => `qr_dev_${scope}`;
+function knownDevice(req, scope, username) {
+  const prefix = deviceCookieName(scope) + "=";
+  const raw = String(req.headers.cookie || "").split(";").map((c) => c.trim()).find((c) => c.startsWith(prefix));
+  if (!raw) return false;
+  const [payload, sig] = raw.slice(prefix.length).split(".");
+  if (!payload || !sig || !safeEq(sig, signPayload(payload))) return false;
+  try {
+    const d = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return d.s === scope && d.u === String(username || "").trim().toLowerCase() && d.exp > Date.now();
+  } catch { return false; }
+}
+function deviceCookie(req, scope, username) {
+  const payload = b64url(JSON.stringify({ u: String(username).toLowerCase(), s: scope, exp: Date.now() + DEVICE_MS }));
+  return `${deviceCookieName(scope)}=${payload}.${signPayload(payload)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${DEVICE_MS / 1000}${req.headers["x-forwarded-proto"] === "https" ? "; Secure" : ""}`;
+}
 const LOCKED_MSG = "Too many failed sign-ins for this account. Try again in a few minutes.";
 // Signup throttle: 5 new restaurants per IP per hour.
 const signups = new Map();
@@ -546,7 +566,7 @@ async function createRestaurant(req, res) {
   store.restaurants[slug] = rest; noteSignup(ip);
   try { await persist(rest); }
   catch (e) { delete store.restaurants[slug]; markDeleted(slug); throw e; } // never keep a restaurant that was not stored
-  res.writeHead(201, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession(rest.staff[0], rest), SESSION_MS / 1000) });
+  res.writeHead(201, { "Content-Type": "application/json", "Set-Cookie": [sessionCookie(req, slug, makeSession(rest.staff[0], rest), SESSION_MS / 1000), deviceCookie(req, slug, username)] });
   res.end(JSON.stringify({ slug, name, adminUrl: `/r/${slug}/admin`, kitchenUser: kitchenPassword ? "kitchen" : null }));
 }
 
@@ -558,13 +578,13 @@ const docTime = (iso) => new Date(iso).toLocaleString("en-NG", { timeZone: APP_T
 const docMoney = (n) => "₦" + Number(n).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function docLocked(res, msg) {
   res.writeHead(403, { "Content-Type": "text/html" });
-  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not available yet</title><style>body{margin:0;background:#faf7e9;color:#1a221d;font:16px/1.5 system-ui,sans-serif}main{max-width:32rem;margin:14vh auto;padding:0 1.25rem}h1{letter-spacing:-.02em}</style><main><h1>Not available yet</h1><p>${htmlEsc(msg)}</p></main>`);
+  res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not available yet</title><style>body{margin:0;background:#faf7e9;color:#1a221d;font:16px/1.5 system-ui,sans-serif}main{max-width:32rem;margin:14vh auto;padding:0 1.25rem}h1{letter-spacing:-.02em}</style><main><h1>Not available yet</h1><p>${htmlEsc(msg)}</p></main>`);
 }
 function docPage(rest, o, kind) {
   const isReceipt = kind === "receipt";
   const rows = o.items.map((i) => `<tr><td>${i.qty} × ${htmlEsc(i.name)}${i.modifiers?.length ? `<br><small>${i.modifiers.map((m) => htmlEsc(m.name)).join(", ")}</small>` : ""}</td><td class="n">${docMoney(i.unitPrice)}</td><td class="n">${docMoney(i.lineTotal)}</td></tr>`).join("");
   const sur = (o.surcharges || []).map((s) => `<tr><td colspan="2">${htmlEsc(s.name)}</td><td class="n">${docMoney(s.amount)}</td></tr>`).join("");
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${isReceipt ? "RECEIPT" : "INVOICE"} ${htmlEsc(o.id)} — ${htmlEsc(rest.name)}</title>
 <style>body{margin:0;background:#fff;color:#1a221d;font:15px/1.5 system-ui,sans-serif}main{max-width:36rem;margin:2rem auto;padding:0 1.25rem}h1{letter-spacing:.08em;margin:.2rem 0}.paid{display:inline-block;border:2px solid #0e3727;color:#0e3727;font-weight:800;letter-spacing:.1em;padding:.15rem .6rem;border-radius:.4rem;transform:rotate(-3deg)}table{width:100%;border-collapse:collapse;margin:1rem 0}td,th{padding:.4rem .2rem;border-bottom:1px solid #e5e0cf;text-align:left;vertical-align:top}.n{text-align:right;white-space:nowrap}.tot td{font-weight:800;font-size:1.05rem;border-top:2px solid #1a221d}button{padding:.6rem 1.2rem;border-radius:999px;border:0;background:#0e3727;color:#fff;font-weight:700;cursor:pointer}@media print{button{display:none}}</style>
 <main><p>${htmlEsc(rest.name)}</p><h1>${isReceipt ? "RECEIPT" : "INVOICE"}</h1>
@@ -616,12 +636,12 @@ async function handleSuperadmin(req, res, url) {
     if (!SUPERADMIN.username || !SUPERADMIN.password) return json(res, 503, { error: "Super admin is not configured. Set SUPERADMIN_USER and SUPERADMIN_PASSWORD." });
     const ip = clientIp(req);
     const b = await bodyJson(req);
-    if (loginThrottled(ip, "__platform__") || accountLocked("__platform__", SUPERADMIN.username)) return tooMany(res, LOCKED_MSG, Math.ceil(LOGIN_LOCK_MS / 1000));
+    if (loginThrottled(ip, "__platform__") || (accountLocked("__platform__", SUPERADMIN.username) && !knownDevice(req, "__platform__", SUPERADMIN.username))) return tooMany(res, LOCKED_MSG, Math.ceil(LOGIN_LOCK_MS / 1000));
     const ok = safeEq(String(b.username || ""), SUPERADMIN.username) & safeEq(String(b.password || ""), SUPERADMIN.password);
     if (!ok) { noteLoginFail(ip, "__platform__"); noteAccountFail("__platform__", SUPERADMIN.username); return json(res, 401, { error: "Wrong username or password" }); }
     loginFails.delete(failKey(ip, "__platform__")); clearAccountFails("__platform__", SUPERADMIN.username);
     const payload = b64url(JSON.stringify({ u: SUPERADMIN.username, r: "superadmin", f: superFingerprint(), exp: Date.now() + SESSION_MS }));
-    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": superCookie(req, `${payload}.${signPayload(payload)}`, SESSION_MS / 1000) });
+    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": [superCookie(req, `${payload}.${signPayload(payload)}`, SESSION_MS / 1000), deviceCookie(req, "__platform__", SUPERADMIN.username)] });
     return res.end(JSON.stringify({ user: SUPERADMIN.username, role: "superadmin" }));
   }
   if (req.method === "POST" && p === "/api/superadmin/auth/logout") {
@@ -745,12 +765,12 @@ async function handleRestaurantApi(req, res, url, rest, p) {
   // --- auth ---
   if (req.method === "POST" && p === "/auth/login") {
     const b = await bodyJson(req);
-    if (loginThrottled(ip, slug) || accountLocked(slug, b.username)) return tooMany(res, LOCKED_MSG, Math.ceil(LOGIN_LOCK_MS / 1000));
+    if (loginThrottled(ip, slug) || (accountLocked(slug, b.username) && !knownDevice(req, slug, b.username))) return tooMany(res, LOCKED_MSG, Math.ceil(LOGIN_LOCK_MS / 1000));
     const acct = rest.staff.find((a) => a.username.toLowerCase() === String(b.username || "").trim().toLowerCase());
     const ok = (await checkPassword(b.password || "", acct ? acct.hash : DUMMY_HASH)) && !!acct;
     if (!ok) { noteLoginFail(ip, slug); noteAccountFail(slug, b.username); return json(res, 401, { error: "Wrong username or password" }); }
     loginFails.delete(failKey(ip, slug)); clearAccountFails(slug, b.username);
-    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession(acct, rest), SESSION_MS / 1000) });
+    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": [sessionCookie(req, slug, makeSession(acct, rest), SESSION_MS / 1000), deviceCookie(req, slug, acct.username)] });
     return res.end(JSON.stringify({ user: acct.username, role: acct.role }));
   }
   if (req.method === "POST" && p === "/auth/logout") {
@@ -1014,7 +1034,7 @@ async function loadStatic(full) {
 }
 const notFoundPage = (res, what = "Page") => {
   res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not found</title><style>body{margin:0;background:#faf7e9;color:#1a221d;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:32rem;margin:14vh auto;padding:0 1.25rem}h1{font-size:2.25rem;letter-spacing:-.03em;line-height:1.1;margin:0 0 .75rem}p{color:#5b665f;margin:0 0 1.5rem}a.b{display:inline-flex;align-items:center;min-height:46px;padding:0 22px;border-radius:999px;background:#0e3727;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>${what} not found</h1><p>Check the address, or head back to the home page.</p><a class="b" href="/">Go to the home page</a></main>`);
+  res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not found</title><style>body{margin:0;background:#faf7e9;color:#1a221d;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:32rem;margin:14vh auto;padding:0 1.25rem}h1{font-size:2.25rem;letter-spacing:-.03em;line-height:1.1;margin:0 0 .75rem}p{color:#5b665f;margin:0 0 1.5rem}a.b{display:inline-flex;align-items:center;min-height:46px;padding:0 22px;border-radius:999px;background:#0e3727;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>${what} not found</h1><p>Check the address, or head back to the home page.</p><a class="b" href="/">Go to the home page</a></main>`);
 };
 async function serveStatic(req, res, url) {
   if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405, { Allow: "GET, HEAD" }); return res.end(); }

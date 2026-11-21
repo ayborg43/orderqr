@@ -71,12 +71,23 @@ starts empty — there is no demo restaurant and there are no default logins.
   (`LOGIN_MAX_FAILS`, `LOGIN_LOCK_MS`), so a botnet cannot guess one manager's password.
   While locked even the right password is refused, and unknown usernames lock the same way,
   so the reply never reveals whether an account exists. The platform login behaves the same.
-  If a legitimate user is locked out, they wait it out; there is nothing to reset.
+  A browser that has signed in to an account before holds a signed "known device" cookie (90
+  days) for it, and the lockout does not apply to that browser (the password is still checked),
+  so someone who only knows a username cannot lock the real user out of their own device.
+  A new device that hits a lock waits it out; restarting the app clears all locks.
 - **Cross-site protection.** State-changing API calls (anything but GET) are refused with 403
   when the browser says they came from another site: `Sec-Fetch-Site` other than
   `same-origin`/`none`, or an `Origin` that is not this site (or `PUBLIC_BASE_URL`). This
   matters because other subdomains of the same domain count as "same site" for cookies.
   curl and other tools that send neither header are unaffected.
+- **Guest basket recovery.** A dish that is sold out or deleted while it sits in a guest's
+  basket is removed for them (with a notice) and the rest of the basket is priced again; any
+  other pricing problem shows the basket with Remove buttons instead of leaving the guest stuck.
+  An empty menu says so instead of "no dishes match".
+- **Accessibility.** Every page passes an automated axe-core run (WCAG 2.2 AA and best practices,
+  13 page states including dialogs on phone and desktop): sufficient contrast, labelled controls,
+  landmarks, one `h1` per page, a skip link on the home page, keyboard access to scrolling regions.
+  This does not replace testing with a screen reader and on real phones.
 - **Live feeds follow access.** A staff screen's feed is re-checked every 20 seconds and
   closed when the session expires or is revoked. Resetting a staff password, replacing a
   table's QR code, removing a table or deleting a restaurant closes the affected feeds at once.

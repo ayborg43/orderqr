@@ -503,3 +503,56 @@ test("live feeds close when staff access is revoked or a table's code is replace
   assert.equal((await req("DELETE", "/api/superadmin/restaurants/revoked-feed", { cookie: saCookie, body: { confirm: "revoked-feed" } })).status, 200);
   assert.equal(await staff2Closed, true);
 });
+
+/* ======================= round four: basket recovery, trusted device, accessibility basics ======================= */
+test("a dish that was deleted or sold out comes back with a field the guest page can act on", async () => {
+  const gone = await req("POST", `${API}/orders/preview`, { body: { items: [{ menuItemId: "no-such-dish", qty: 1 }] } });
+  assert.equal(gone.status, 400);
+  assert.equal(gone.body.unknownItem, "no-such-dish");
+  assert.match(gone.body.error, /no longer on the menu/);
+  assert.ok(!/Unknown item/.test(gone.body.error), "no raw internal ids in the message");
+  await req("PATCH", `${API}/menu/fries/availability`, { cookie: srv.cookie, body: { available: false } });
+  try {
+    const sold = await req("POST", `${API}/orders/preview`, { body: { items: [{ menuItemId: "fries", qty: 1 }] } });
+    assert.equal(sold.body.soldOut, "fries"); assert.match(sold.body.error, /Sold out/);
+  } finally { await req("PATCH", `${API}/menu/fries/availability`, { cookie: srv.cookie, body: { available: true } }); }
+});
+
+test("a browser that signed in before can still sign in while its account is locked; strangers cannot", async () => {
+  const s = await startServer(3253, { env: { TRUST_PROXY: "1", LOGIN_LOCK_MS: "60000" } });
+  try {
+    const login = (user, pass, ip, cookie) => fetch(`${s.base}/api/r/${REST}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": ip, ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify({ username: user, password: pass }) });
+    const good = await login("admin", "admin123", "198.51.100.1");
+    assert.equal(good.status, 200);
+    const setCookies = good.headers.getSetCookie();
+    const device = setCookies.find((c) => c.startsWith(`qr_dev_${REST}=`));
+    assert.ok(device && /HttpOnly/.test(device) && /Max-Age=\d+/.test(device), "a known-device cookie is issued");
+    const deviceCookie = device.split(";")[0];
+    // Strangers guess from many addresses until the account locks.
+    for (let i = 1; i <= 10; i++) await login("admin", "guess" + i, `203.0.113.${i}`);
+    assert.equal((await login("admin", "admin123", "203.0.113.50")).status, 429, "a stranger with the right password is refused while locked");
+    assert.equal((await login("admin", "admin123", "198.51.100.1", deviceCookie)).status, 200, "the real user's own browser still gets in");
+    assert.equal((await login("admin", "wrong", "198.51.100.1", deviceCookie)).status, 401, "but the password is still checked");
+    // The cookie belongs to one username, and cannot be forged.
+    for (let i = 1; i <= 10; i++) await login("kitchen", "guess" + i, `203.0.113.${100 + i}`);
+    assert.equal((await login("kitchen", "kitchen123", "198.51.100.2", deviceCookie)).status, 429, "admin's device cookie does not open kitchen's lock");
+    const forged = deviceCookie.replace(/=(.)/, "=x$1");
+    assert.equal((await login("kitchen", "kitchen123", "198.51.100.3", forged)).status, 429, "a tampered cookie is ignored");
+  } finally { s.stop(); }
+});
+
+test("page basics for assistive technology: language, landmarks, headings, skip link", async () => {
+  const page = async (p) => (await fetch(srv.base + p)).text();
+  const home = await page("/");
+  assert.match(home, /<main id="main">/); assert.match(home, /<\/main>\s*<footer/); assert.match(home, /class="skip" href="#main"/);
+  assert.ok(!/<h4>/.test(home), "footer headings follow the page outline");
+  assert.ok(!/aria-label="Chopdesk home"/.test(home) && !/aria-label="Chopdesk home"/.test(await page("/signup")), "the logo link is named by its visible text");
+  assert.match(home, /class="n-quotes"[^>]*tabindex="0"/, "the scrolling quotes can be reached by keyboard");
+  assert.match(await page(`/r/${REST}/guest`), /<h1 class="sr"/);
+  assert.match(await page(`/r/${REST}/admin`), /<h1 class="sr"/);
+  const o = (await req("POST", `${API}/orders`, { body: { ...srv.k("10"), items: [{ menuItemId: "fries", qty: 1 }] } })).body.order;
+  await req("POST", `${API}/orders/${o.id}/confirm-payment`, { cookie: srv.cookie });
+  for (const [p, label] of [[`${API}/orders/${o.id}/receipt?t=${o.token}`, "receipt"], [`${API}/orders/${o.id}/invoice?t=wrong`, "locked document"], ["/no-such-page", "404 page"]]) {
+    assert.match(await page(p), /<html lang="en">/, label);
+  }
+});

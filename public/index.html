@@ -16,12 +16,13 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body class="home">
+<a class="skip" href="#main">Skip to content</a>
 <div id="alert"></div>
 
 <!-- ===================== NAV ===================== -->
 <header class="n-nav">
   <div class="n-nav__in">
-    <a class="n-logo" href="/" aria-label="Chopdesk home">
+    <a class="n-logo" href="/">
       <span class="n-logo__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg></span>
       <span>Chopdesk<small>QR ordering for restaurants</small></span>
     </a>
@@ -43,6 +44,7 @@
     </div>
   </div>
 </header>
+<main id="main">
 
 <!-- ===================== HERO ===================== -->
 <section class="n-hero">
@@ -174,7 +176,7 @@
   <div class="n-in">
     <p class="n-kicker">What operators say</p>
     <h2>Sample operator feedback</h2>
-    <div class="n-quotes">
+    <div class="n-quotes" tabindex="0" role="region" aria-label="Operator feedback">
       <figure class="n-quote"><blockquote>“Tickets hit the pass the second a guest orders, so dockets don’t get lost and nobody shouts across the kitchen.”</blockquote><figcaption><b>Kitchen lead</b><span>Grill station</span></figcaption></figure>
       <figure class="n-quote"><blockquote>“Guests reorder dessert without flagging anyone down.”</blockquote><figcaption><b>Floor manager</b><span>Front of house</span></figcaption></figure>
       <figure class="n-quote"><blockquote>“Marking a dish sold-out takes one tap, and it’s gone from every phone at every table. That alone saves us nightly.”</blockquote><figcaption><b>Venue manager</b><span>Restaurant owner</span></figcaption></figure>
@@ -235,6 +237,8 @@
 </section>
 
 <!-- ===================== FOOTER ===================== -->
+</main>
+
 <footer class="n-foot">
   <div class="n-in">
     <div class="n-foot__top">
@@ -243,9 +247,9 @@
         <p>QR ordering for any number of restaurants: guest ordering, kitchen display and admin for each. Each restaurant runs its own menu, tables and staff logins.</p>
         <span class="badge plain">Waiter-collected payment</span>
       </div>
-      <nav class="n-foot__col" aria-label="Order"><h4>Order</h4><a href="/signup">Create your restaurant</a><a href="#how">How it works</a><a href="#sync">Screens</a></nav>
-      <nav class="n-foot__col" aria-label="Operate"><h4>Operate</h4><a href="/signup">Kitchen display</a><a href="/signup">Admin dashboard</a><a href="/signup">Table cards</a><a href="/signup">Surcharges</a></nav>
-      <nav class="n-foot__col" aria-label="Explore"><h4>Explore</h4><a href="/signup">Create your restaurant</a><a href="/login">Staff log in</a><a href="#how">How it works</a><a href="#features">Features</a><a href="#faq">FAQ</a></nav>
+      <nav class="n-foot__col" aria-label="Order"><h3>Order</h3><a href="/signup">Create your restaurant</a><a href="#how">How it works</a><a href="#sync">Screens</a></nav>
+      <nav class="n-foot__col" aria-label="Operate"><h3>Operate</h3><a href="/signup">Kitchen display</a><a href="/signup">Admin dashboard</a><a href="/signup">Table cards</a><a href="/signup">Surcharges</a></nav>
+      <nav class="n-foot__col" aria-label="Explore"><h3>Explore</h3><a href="/signup">Create your restaurant</a><a href="/login">Staff log in</a><a href="#how">How it works</a><a href="#features">Features</a><a href="#faq">FAQ</a></nav>
     </div>
     <div class="n-foot__base"><span>© Chopdesk. QR ordering for restaurants.</span><span>Waiters collect payment in person.</span></div>
   </div>

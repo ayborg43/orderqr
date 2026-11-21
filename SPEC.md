@@ -76,6 +76,8 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - S6. Staff order lists are paged (kitchen: unfinished only; admin: unfinished plus 24h, older on demand).
 - S8. An account locks for 15 minutes after 10 wrong passwords from any addresses; unknown usernames lock the same way. The platform login too.
 - S9. Non-GET API requests that browsers mark as cross-site or cross-origin are refused (403).
+- S11. A browser that signed in before keeps access during a lockout (signed known-device cookie, password still required).
+- S12. Unavailable dishes never jam a guest's basket; every page passes axe-core WCAG 2.2 AA with no violations.
 - S10. Live feeds are re-validated every 20 seconds and closed when access is revoked, a QR code is replaced, or a restaurant is deleted.
 - S7. Postgres stores one row per order; only changed rows are written; a single-writer lock prevents two instances overwriting each other; failed writes surface as 503 and are retried.
 

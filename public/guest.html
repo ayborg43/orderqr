@@ -28,6 +28,7 @@
 <nav class="g-nav" id="catNav" aria-label="Menu sections" hidden><div class="g-nav__in" id="catNavIn"></div></nav>
 
 <main class="wrap" id="main">
+  <h1 class="sr" id="pageH1">Menu</h1>
   <div class="g-tools" id="tools" hidden>
     <label class="searchbox"><span class="sr">Search the menu</span><span id="searchIc"></span><input type="search" id="search" placeholder="Search the menu" autocomplete="off"></label>
     <div class="chips" id="filters" role="group" aria-label="Dietary filters">
@@ -100,7 +101,7 @@ function setPlaque(label) {
   $('#tablePlaque').innerHTML = `<span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : label)}</span>`;
 }
 
-UI.info.then(r => { $('#restName').textContent = r.name; document.title = 'Order — ' + r.name; });
+UI.info.then(r => { $('#restName').textContent = r.name; $('#pageH1').textContent = r.name + ' menu'; document.title = 'Order — ' + r.name; });
 async function load() {
   const { ok: tableOk, data: t } = await UI.api(UI.R('/table') + TQ);
   const table = tableOk ? t.table : null;
@@ -118,7 +119,13 @@ async function load() {
 async function loadMenu() {
   const { data: m } = await UI.api(UI.R('/menu'));
   $('#restName').textContent = m.restaurant; document.title = 'Order — ' + m.restaurant;
-  menu = m.items; $('#tools').hidden = false; renderMenu();
+  menu = m.items; $('#tools').hidden = !menu.length; renderMenu();
+  // A dish the restaurant has since deleted must not stay in the basket: it would block every order.
+  const stale = cart.filter(c => !menu.some(x => x.id === c.menuItemId));
+  if (stale.length) {
+    cart = cart.filter(c => menu.some(x => x.id === c.menuItemId)); idemKey = null; saveCart(); renderCart();
+    toast('Some dishes in your basket are no longer on the menu, so we removed them.', 'err');
+  }
 }
 
 function dishRow(i) {
@@ -136,6 +143,10 @@ function dishRow(i) {
 function renderMenu() {
   const q = $('#search').value.trim().toLowerCase();
   const cats = [...new Set(menu.map(i => i.category))];
+  if (!menu.length) {
+    $('#menu').innerHTML = `<div class="g-empty"><strong>This menu is empty</strong>The restaurant hasn’t added any dishes yet. Please ask your waiter.</div>`;
+    $('#catNav').hidden = true; return;
+  }
   const secs = cats.map(cat => ({ cat, items: menu.filter(i => i.category === cat && (!filter || i.dietary.includes(filter)) && (i.name + ' ' + i.desc).toLowerCase().includes(q)) })).filter(s => s.items.length);
   $('#menu').innerHTML = secs.map(({ cat, items }) => `<section class="g-sec" id="cat-${slug(cat)}" data-cat="${esc(cat)}">
       <h2>${esc(cat)}<span class="strip ${glaze(cat)}"></span></h2><div class="menu-grid">${items.map(dishRow).join('')}</div></section>`).join('')
@@ -220,14 +231,28 @@ function renderCart() {
 }
 
 /* ---------- checkout ---------- */
+async function dropUnavailable(data) {
+  const id = data && (data.soldOut || data.unknownItem);
+  if (!id) return false;
+  cart = cart.filter(c => c.menuItemId !== id); idemKey = null; saveCart(); renderCart(); await loadMenu();
+  toast(esc(data.soldOut ? data.error : 'A dish in your basket is no longer on the menu') + ' — we removed it from your basket.', 'err');
+  return true;
+}
+// Any other pricing problem (for example a new required choice): show the basket with Remove buttons instead of leaving the guest stuck.
+function payFallback(message) {
+  $('#payAlert').innerHTML = `<div class="inline-err" role="alert">${icon('alert')}<span>${esc(String(message).replace(/[.\s]*$/, '.'))} Remove the item below, or go back and choose it again.</span></div>`;
+  $('#payBody').innerHTML = `<ul class="ledger">${cart.map((c, n) => { const m = menu.find(x => x.id === c.menuItemId); return `<li><span>${c.qty} × ${esc(m ? m.name : 'A dish that is no longer available')}<span class="sub">Needs a change before you can order</span><button type="button" class="btn plain rm" data-rm="${n}">Remove</button></span><span class="amt"></span></li>`; }).join('')}</ul>`;
+  $('#payNow').disabled = true; $('#payNow').innerHTML = 'Place order';
+  if (!$('#payDlg').open) $('#payDlg').showModal();
+}
 async function openPay() {
   const { ok, data } = await send(UI.R('/orders/preview'), 'POST', { items: cart });
   if (!ok) {
-    if (data.soldOut) { cart = cart.filter(c => c.menuItemId !== data.soldOut); saveCart(); renderCart(); await loadMenu(); }
-    toast(esc(data.error || 'Could not price your basket') + (data.soldOut ? ' — we removed it from your basket.' : ' — please update your basket.'), 'err');
-    if ($('#payDlg').open) $('#payDlg').close(); return;
+    // A dish that is sold out or gone is dropped for the guest, and the rest of the basket is priced again.
+    if (await dropUnavailable(data)) return cart.length ? openPay() : ($('#payDlg').open && $('#payDlg').close());
+    return payFallback(data.error || 'We couldn’t price your basket.');
   }
-  $('#payAlert').innerHTML = '';
+  $('#payAlert').innerHTML = ''; $('#payNow').disabled = false;
   $('#payBody').innerHTML = `<ul class="ledger">${data.items.map((it, n) => `<li><span>${it.qty} × ${esc(it.name)}
       ${it.modifiers.length ? `<span class="sub">${it.modifiers.map(m => esc(m.name)).join(', ')}</span>` : ''}${it.note ? `<span class="sub">Note: ${esc(it.note)}</span>` : ''}
       <button type="button" class="btn plain rm" data-rm="${n}">Remove</button></span><span class="amt">${fmt(it.lineTotal)}</span></li>`).join('')}
@@ -253,6 +278,7 @@ $('#payNow').onclick = async () => {
   const { ok, status, data } = res;
   btn.disabled = false; btn.innerHTML = label;
   if (!ok) {
+    if (await dropUnavailable(data)) return cart.length ? openPay() : $('#payDlg').close();
     $('#payAlert').innerHTML = `<div class="inline-err" role="alert">${icon('alert')}<span>${esc(data.error || 'Could not place your order')}</span></div>`;
     // Keep the key after a server or network failure: the order may have been saved, and a retry must not order twice.
     if (status >= 400 && status < 500) idemKey = null;
