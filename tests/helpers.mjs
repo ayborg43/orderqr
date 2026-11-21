@@ -24,7 +24,16 @@ export async function startServer(port, { env = {}, store } = {}) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: "Test Restaurant", slug: REST, username: "admin", password: "admin123", kitchenPassword: "kitchen123", tables: 12, sampleMenu: true }),
   });
-  return { base, dir, stop: () => proc.kill() };
+  // Every table has a secret key (printed in its QR code). Guests must present it, so the suites fetch the keys as the manager.
+  const login = await fetch(`${base}/api/r/${REST}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "admin", password: "admin123" }) });
+  const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
+  const tables = (await (await fetch(`${base}/api/r/${REST}/tables`, { headers: { Cookie: cookie } })).json().catch(() => ({}))).tables || [];
+  const keys = Object.fromEntries(tables.map((t) => [t.id, t.key]));
+  return {
+    base, dir, stop: () => proc.kill(), cookie, keys,
+    k: (id) => ({ tableId: String(id), k: keys[String(id)] }),            // body fields for a guest at that table
+    q: (id) => `table=${id}${keys[String(id)] ? `&k=${keys[String(id)]}` : ""}`, // query string for the same
+  };
 }
 
 export function client(base) {

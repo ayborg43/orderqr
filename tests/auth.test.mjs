@@ -72,8 +72,9 @@ test("existing staff can reach a login page from the home page", async () => {
 
 test("guest surface stays public", async () => {
   assert.equal((await req("GET", `${API}/menu`)).status, 200);
-  assert.equal((await req("GET", `${API}/tables`)).status, 200);
-  assert.equal((await req("GET", `${API}/orders?table=5`)).status, 200);
-  const order = await req("POST", `${API}/orders`, { body: { tableId: "5", idempotencyKey: "auth-test-" + Date.now(), items: [{ menuItemId: "fries", qty: 1 }] } });
+  assert.equal((await req("GET", `${API}/table?${srv.q("5")}`)).status, 200);
+  assert.equal((await req("GET", `${API}/orders?${srv.q("5")}`)).status, 200);
+  assert.equal((await req("GET", `${API}/tables`)).status, 401, "table keys are staff-only");
+  const order = await req("POST", `${API}/orders`, { body: { ...srv.k("5"), idempotencyKey: "auth-test-" + Date.now(), items: [{ menuItemId: "fries", qty: 1 }] } });
   assert.equal(order.status, 201);
 });

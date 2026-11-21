@@ -1,0 +1,264 @@
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import { spawn } from "node:child_process";
+import { readFileSync, chmodSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { startServer, client, cookieOf, REST } from "./helpers.mjs";
+
+const API = `/api/r/${REST}`;
+const SA = { username: "root", password: "platform-secret-1" };
+let srv, req, saCookie;
+
+before(async () => {
+  srv = await startServer(3230, { env: { SUPERADMIN_USER: SA.username, SUPERADMIN_PASSWORD: SA.password, SESSION_SECRET: "hardening-secret", SIGNUP_PER_HOUR: "100" } });
+  req = client(srv.base);
+  saCookie = cookieOf((await req("POST", "/api/superadmin/auth/login", { body: SA })).cookie);
+});
+after(() => srv?.stop());
+
+const signup = (name, username = "owner", extra = {}) => req("POST", "/api/restaurants", { body: { name, username, password: "password-123", tables: 4, ...extra } });
+const keysOf = async (slug, cookie) => Object.fromEntries((await req("GET", `/api/r/${slug}/tables`, { cookie })).body.tables.map((t) => [t.id, t.key]));
+const fries = (extra = {}) => ({ items: [{ menuItemId: "fries", qty: 1 }], ...extra });
+
+/* A restaurant document as the server stores it, for tests that need old or special data. */
+const hashSync = (pw) => { const salt = "testsalt"; return `scrypt$${salt}$${crypto.scryptSync(pw, salt, 32).toString("base64url")}`; };
+const mkRest = (slug, o = {}) => ({
+  slug, name: slug, createdAt: "2026-01-01T00:00:00.000Z",
+  tables: [{ id: "1", label: "Table 1", key: "key1" }, { id: "2", label: "Table 2", key: "key2" }],
+  menu: [{ id: "fries", name: "Fries", desc: "", price: 5, category: "Sides", station: "Kitchen", dietary: [], available: true, modifierGroups: [] }],
+  orders: [], assistRequests: [], settings: { cardSurchargePct: 0, holidaySurchargePct: 10, holidayMode: false, v: 2 }, seq: 1000,
+  staff: [{ username: "boss", role: "manager", hash: hashSync("boss-pass-1") }], sessions: {}, ...o,
+});
+const mkOrder = (n, o = {}) => ({
+  id: `ORD-${n}`, tableId: "1", tableLabel: "Table 1", sessionId: "s1", token: `tok${n}`, items: [{ menuItemId: "fries", name: "Fries", station: "Kitchen", qty: 1, unitPrice: 5, modifiers: [], note: "", lineTotal: 5 }],
+  subtotal: 5, surcharges: [], total: 5, status: "Received", payment: { state: "awaiting-collection" }, idempotencyKey: null,
+  createdAt: new Date().toISOString(), history: [{ status: "Received", at: new Date().toISOString() }], ...o,
+});
+
+/* ---------- 1. sessions are bound to the account ---------- */
+test("deleting and re-registering an address does not hand the old owner's session to the new owner", async () => {
+  const first = await signup("Victim Cafe", "oldowner");
+  assert.equal(first.status, 201);
+  const oldCookie = cookieOf(first.cookie);
+  assert.equal((await req("GET", "/api/r/victim-cafe/orders", { cookie: oldCookie })).status, 200);
+  assert.equal((await req("DELETE", "/api/superadmin/restaurants/victim-cafe", { cookie: saCookie, body: { confirm: "victim-cafe" } })).status, 200);
+  assert.equal((await signup("Victim Cafe", "newowner")).status, 201);
+  assert.equal((await req("GET", "/api/r/victim-cafe/orders", { cookie: oldCookie })).status, 401, "old session must not open the new restaurant");
+  // Same username, same password: still a different restaurant, still rejected.
+  assert.equal((await req("GET", "/api/r/victim-cafe/auth/me", { cookie: oldCookie })).status, 401);
+});
+
+test("a password reset ends that account's existing sessions", async () => {
+  const s = await signup("Reset Grill", "chef");
+  const cookie = cookieOf(s.cookie);
+  assert.equal((await req("GET", "/api/r/reset-grill/auth/me", { cookie })).status, 200);
+  assert.equal((await req("POST", "/api/superadmin/restaurants/reset-grill/staff/chef/reset-password", { cookie: saCookie, body: { password: "brand-new-pass-9" } })).status, 200);
+  assert.equal((await req("GET", "/api/r/reset-grill/auth/me", { cookie })).status, 401, "the old cookie is dead");
+  const again = await req("POST", "/api/r/reset-grill/auth/login", { body: { username: "chef", password: "brand-new-pass-9" } });
+  assert.equal(again.status, 200);
+  assert.equal((await req("GET", "/api/r/reset-grill/auth/me", { cookie: cookieOf(again.cookie) })).status, 200);
+});
+
+test("rotating the platform password ends super admin sessions", async () => {
+  const s2 = await startServer(3231, { env: { SUPERADMIN_USER: SA.username, SUPERADMIN_PASSWORD: SA.password, SESSION_SECRET: "hardening-secret" } });
+  const c2 = client(s2.base);
+  const ck = cookieOf((await c2("POST", "/api/superadmin/auth/login", { body: SA })).cookie);
+  assert.equal((await c2("GET", "/api/superadmin/overview", { cookie: ck })).status, 200);
+  s2.stop();
+  // Same secret, new password: the old cookie must not work.
+  const s3 = await startServer(3232, { env: { SUPERADMIN_USER: SA.username, SUPERADMIN_PASSWORD: "rotated-password-2", SESSION_SECRET: "hardening-secret" } });
+  try { assert.equal((await client(s3.base)("GET", "/api/superadmin/overview", { cookie: ck })).status, 401); } finally { s3.stop(); }
+});
+
+/* ---------- 2. no surprise charge ---------- */
+test("a new restaurant charges nothing extra by default", async () => {
+  const s = await signup("Plain Prices");
+  const ck = cookieOf(s.cookie), keys = await keysOf("plain-prices", ck);
+  const o = await req("POST", "/api/r/plain-prices/orders", { body: { tableId: "1", k: keys["1"], ...fries() } });
+  assert.equal(o.status, 201);
+  assert.deepEqual(o.body.order.surcharges, []);
+  assert.equal(o.body.order.total, o.body.order.subtotal);
+});
+
+test("an old restaurant stuck on the silent 1.5% default is reset to no charge once; a chosen value is kept", async () => {
+  const stale = (slug, pct) => mkRest(slug, { settings: { cardSurchargePct: pct, holidaySurchargePct: 10, holidayMode: false } }); // no `v` marker: pre-fix data
+  const s = await startServer(3233, { store: { restaurants: { "stale-default": stale("stale-default", 1.5), "chose-five": stale("chose-five", 5) } } });
+  try {
+    const c = client(s.base);
+    assert.equal((await c("GET", "/api/r/stale-default/menu")).body.settings.cardSurchargePct, 0);
+    assert.equal((await c("GET", "/api/r/chose-five/menu")).body.settings.cardSurchargePct, 5);
+  } finally { s.stop(); }
+});
+
+/* ---------- 3. guest privacy ---------- */
+test("guests see only the current visit, never other diners' orders, and nothing about staff", async () => {
+  const s = await signup("Privacy Place");
+  const ck = cookieOf(s.cookie), K = await keysOf("privacy-place", ck);
+  const g = (id) => ({ tableId: id, k: K[id] });
+  const first = await req("POST", "/api/r/privacy-place/orders", { body: { ...g("1"), ...fries() } });
+  const id = first.body.order.id;
+  await req("POST", `/api/r/privacy-place/orders/${id}/confirm-payment`, { cookie: ck });
+  const mine = await req("GET", `/api/r/privacy-place/orders?table=1&k=${K["1"]}`);
+  assert.equal(mine.body.orders.length, 1);
+  const raw = JSON.stringify(mine.body);
+  assert.ok(!/confirmedBy|idempotencyKey|history|"owner"/.test(raw), "no staff names, keys or history in the guest view: " + raw);
+  assert.ok(mine.body.orders[0].token, "the guest gets the private token for the invoice link");
+  // Staff clear the table: the next diner starts empty, and the old order is still on record for staff.
+  assert.equal((await req("POST", `/api/r/privacy-place/tables/1/close`, { cookie: ck })).status, 200);
+  assert.equal((await req("GET", `/api/r/privacy-place/orders?table=1&k=${K["1"]}`)).body.orders.length, 0);
+  assert.equal((await req("GET", `/api/r/privacy-place/orders?scope=open`, { cookie: ck })).body.orders.length, 1);
+  const next = await req("POST", "/api/r/privacy-place/orders", { body: { ...g("1"), ...fries() } });
+  assert.equal((await req("GET", `/api/r/privacy-place/orders?table=1&k=${K["1"]}`)).body.orders.map((o) => o.id).join(), next.body.order.id);
+  // Other tables are separate visits.
+  assert.equal((await req("GET", `/api/r/privacy-place/orders?table=2&k=${K["2"]}`)).body.orders.length, 0);
+});
+
+test("a table needs its secret key; a new QR code retires the old one", async () => {
+  const s = await signup("Key Keeper");
+  const ck = cookieOf(s.cookie), K = await keysOf("key-keeper", ck);
+  const q = (id, k) => `table=${id}${k ? `&k=${k}` : ""}`;
+  assert.equal((await req("GET", `/api/r/key-keeper/table?${q("1")}`)).status, 404, "no key");
+  assert.equal((await req("GET", `/api/r/key-keeper/table?${q("1", "wrongkey")}`)).status, 404, "wrong key");
+  assert.equal((await req("GET", `/api/r/key-keeper/table?${q("1", K["1"])}`)).status, 200);
+  assert.equal((await req("POST", "/api/r/key-keeper/orders", { body: { tableId: "1", ...fries() } })).status, 400, "ordering without the key");
+  assert.equal((await req("POST", "/api/r/key-keeper/assist", { body: { tableId: "1", k: "nope" } })).status, 400);
+  assert.equal((await req("GET", `/api/r/key-keeper/orders?${q("1")}`)).status, 400, "reading the bill without the key");
+  assert.equal((await req("GET", `/api/r/key-keeper/table-events?${q("1")}`)).status, 400);
+  // Keys are never listed to the public.
+  assert.ok(!JSON.stringify((await req("GET", "/api/r/key-keeper/menu")).body).includes(K["1"]));
+  assert.equal((await req("GET", "/api/r/key-keeper/tables")).status, 401);
+  // Rotation
+  const rot = await req("POST", "/api/r/key-keeper/tables/1/rotate-key", { cookie: ck });
+  assert.equal(rot.status, 200); assert.notEqual(rot.body.table.key, K["1"]);
+  assert.equal((await req("GET", `/api/r/key-keeper/table?${q("1", K["1"])}`)).status, 404, "old printed code is dead");
+  assert.equal((await req("GET", `/api/r/key-keeper/table?${q("1", rot.body.table.key)}`)).status, 200);
+  assert.equal((await req("POST", "/api/r/key-keeper/tables/1/rotate-key")).status, 401, "managers only");
+});
+
+test("an order record can only be read by staff, and visits expire after two idle hours", async () => {
+  const old = Date.now() - 3 * 3600e3;
+  const rest = mkRest("old-visit", {
+    sessions: { 1: { id: "s1", startedAt: old, lastAt: old }, 2: { id: "s2", startedAt: Date.now() - 600e3, lastAt: Date.now() - 60e3 } },
+    orders: [mkOrder(1001), mkOrder(1002, { tableId: "2", tableLabel: "Table 2", sessionId: "s2" })],
+  });
+  const s = await startServer(3234, { store: { restaurants: { "old-visit": rest } } });
+  try {
+    const c = client(s.base);
+    assert.equal((await c("GET", "/api/r/old-visit/orders?table=1&k=key1")).body.orders.length, 0, "table 1's visit went idle");
+    assert.equal((await c("GET", "/api/r/old-visit/orders?table=2&k=key2")).body.orders.length, 1, "table 2's visit is live");
+    assert.equal((await c("GET", "/api/r/old-visit/orders/ORD-1001")).status, 401, "sequential order numbers are not a public lookup");
+    // A new order at the idle table opens a fresh visit instead of reviving the old one.
+    const placed = await c("POST", "/api/r/old-visit/orders", { body: { tableId: "1", k: "key1", ...fries() } });
+    assert.equal(placed.status, 201);
+    assert.equal((await c("GET", "/api/r/old-visit/orders?table=1&k=key1")).body.orders.map((o) => o.id).join(), placed.body.order.id);
+  } finally { s.stop(); }
+});
+
+test("invoice and receipt links need the order's own token", async () => {
+  const s = await signup("Paper Trail");
+  const ck = cookieOf(s.cookie), K = await keysOf("paper-trail", ck);
+  const o = (await req("POST", "/api/r/paper-trail/orders", { body: { tableId: "1", k: K["1"], ...fries() } })).body.order;
+  await req("POST", `/api/r/paper-trail/orders/${o.id}/confirm-payment`, { cookie: ck });
+  const doc = (qs) => fetch(`${srv.base}/api/r/paper-trail/orders/${o.id}/receipt${qs}`);
+  assert.equal((await doc(`?t=${o.token}`)).status, 200);
+  assert.equal((await doc("")).status, 403);
+  assert.equal((await doc("?table=1")).status, 403);
+  assert.equal((await doc("?t=" + "0".repeat(o.token.length))).status, 403);
+});
+
+/* ---------- 4. limits on anonymous endpoints ---------- */
+test("one table cannot flood the kitchen: orders are rate limited and capped", async () => {
+  const s = await signup("Flood Test");
+  const ck = cookieOf(s.cookie), K = await keysOf("flood-test", ck);
+  const codes = [];
+  for (let i = 0; i < 8; i++) codes.push((await req("POST", "/api/r/flood-test/orders", { body: { tableId: "1", k: K["1"], ...fries() } })).status);
+  assert.deepEqual(codes, [201, 201, 201, 201, 201, 201, 429, 429], "6 orders per table per 10 minutes");
+  assert.equal((await req("POST", "/api/r/flood-test/orders", { body: { tableId: "2", k: K["2"], ...fries() } })).status, 201, "another table is unaffected");
+  const big = await req("POST", "/api/r/flood-test/orders", { body: { tableId: "3", k: K["3"], items: Array.from({ length: 41 }, () => ({ menuItemId: "fries", qty: 1 })) } });
+  assert.equal(big.status, 400); assert.match(big.body.error, /too large/i);
+  const heavy = await req("POST", "/api/r/flood-test/orders", { body: { tableId: "3", k: K["3"], items: Array.from({ length: 11 }, () => ({ menuItemId: "fries", qty: 20 })) } });
+  assert.equal(heavy.status, 400, "more than 200 portions in one order");
+});
+
+test("a table with many unfinished orders is told to ask the waiter", async () => {
+  const now = Date.now();
+  const rest = mkRest("busy-table", { sessions: { 1: { id: "s1", startedAt: now - 1e5, lastAt: now - 1e3 } }, orders: Array.from({ length: 15 }, (_, i) => mkOrder(1001 + i)), seq: 1015 });
+  const s = await startServer(3235, { store: { restaurants: { "busy-table": rest } } });
+  try {
+    const r = await client(s.base)("POST", "/api/r/busy-table/orders", { body: { tableId: "1", k: "key1", ...fries() } });
+    assert.equal(r.status, 429); assert.match(r.body.error, /waiter/i);
+  } finally { s.stop(); }
+});
+
+test("calling staff twice is one request, not two", async () => {
+  const s = await signup("Bell Test");
+  const ck = cookieOf(s.cookie), K = await keysOf("bell-test", ck);
+  const call = () => req("POST", "/api/r/bell-test/assist", { body: { tableId: "1", k: K["1"] } });
+  assert.equal((await call()).status, 201);
+  const again = await call();
+  assert.equal(again.status, 200); assert.equal(again.body.already, true);
+  assert.equal((await req("GET", "/api/r/bell-test/assist", { cookie: ck })).body.requests.length, 1);
+});
+
+/* ---------- 6. staff order lists are paged ---------- */
+test("kitchen gets only open orders; admin gets open plus the last day, and can page back", async () => {
+  const day = 24 * 3600e3, orders = [];
+  for (let i = 1; i <= 60; i++) orders.push(mkOrder(1000 + i, { status: "Served", createdAt: new Date(Date.now() - 3 * day + i * 1000).toISOString() })); // old, finished
+  orders.push(mkOrder(1061, { status: "Preparing", createdAt: new Date(Date.now() - 2 * day).toISOString() })); // old but still open
+  orders.push(mkOrder(1062, { status: "Served" }), mkOrder(1063, { status: "Received" })); // today
+  const s = await startServer(3236, { store: { restaurants: { "long-history": mkRest("long-history", { orders, seq: 1063 }) } } });
+  try {
+    const c = client(s.base);
+    const ck = cookieOf((await c("POST", "/api/r/long-history/auth/login", { body: { username: "boss", password: "boss-pass-1" } })).cookie);
+    const open = await c("GET", "/api/r/long-history/orders?scope=open", { cookie: ck });
+    assert.deepEqual(open.body.orders.map((o) => o.id), ["ORD-1063", "ORD-1061"], "only unfinished orders, newest first");
+    const recent = await c("GET", "/api/r/long-history/orders?scope=recent", { cookie: ck });
+    assert.deepEqual(recent.body.orders.map((o) => o.id), ["ORD-1063", "ORD-1062", "ORD-1061"]);
+    assert.equal(recent.body.hasMore, true); assert.equal(recent.body.total, 63);
+    const page1 = await c("GET", "/api/r/long-history/orders?before=1061&limit=25", { cookie: ck });
+    assert.equal(page1.body.orders.length, 25); assert.equal(page1.body.orders[0].id, "ORD-1060"); assert.equal(page1.body.hasMore, true);
+    const page3 = await c("GET", "/api/r/long-history/orders?before=1011&limit=25", { cookie: ck });
+    assert.equal(page3.body.orders.length, 10); assert.equal(page3.body.hasMore, false);
+    assert.equal((await c("GET", "/api/r/long-history/orders?scope=open")).status, 401);
+  } finally { s.stop(); }
+});
+
+/* ---------- 5. storage failures are never reported as success ---------- */
+test("when the store cannot be written the guest gets a 503, and a retry does not double-order", async () => {
+  const s = await startServer(3237);
+  const c = client(s.base);
+  try {
+    const body = { ...s.k("4"), idempotencyKey: "retry-1", ...fries() };
+    chmodSync(s.dir, 0o500); // read-only: writes now fail
+    const failed = await c("POST", `${API}/orders`, { body });
+    assert.equal(failed.status, 503); assert.equal(failed.body.code, "STORAGE");
+    chmodSync(s.dir, 0o700);
+    const retry = await c("POST", `${API}/orders`, { body });
+    assert.ok([200, 201].includes(retry.status), "retry succeeds: " + retry.status);
+    const staff = await c("GET", `${API}/orders?scope=open`, { cookie: s.cookie });
+    assert.equal(staff.body.orders.filter((o) => o.idempotencyKey === "retry-1").length, 1, "exactly one order");
+    // Make sure it really lands on disk once writes work again.
+    await c("PATCH", `${API}/orders/${staff.body.orders[0].id}`, { cookie: s.cookie, body: { status: "Preparing" } });
+    const file = JSON.parse(readFileSync(path.join(s.dir, "store.json"), "utf8"));
+    assert.equal(file.restaurants[REST].orders.filter((o) => o.idempotencyKey === "retry-1").length, 1);
+  } finally { try { chmodSync(s.dir, 0o700); } catch {} s.stop(); }
+});
+
+test("SIGTERM flushes and exits cleanly instead of hanging until it is killed", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "term-"));
+  const proc = spawn("node", ["server.js"], { env: { ...process.env, PORT: "3238", DATA_DIR: dir }, stdio: ["ignore", "pipe", "inherit"] });
+  let out = ""; proc.stdout.on("data", (d) => { out += d; });
+  for (let i = 0; i < 40; i++) { try { if ((await fetch("http://localhost:3238/health")).ok) break; } catch {} await new Promise((r) => setTimeout(r, 150)); }
+  const t0 = Date.now();
+  const code = await new Promise((resolve) => { proc.on("exit", (c) => resolve(c)); proc.kill("SIGTERM"); });
+  assert.equal(code, 0); assert.ok(Date.now() - t0 < 4000, "exited promptly");
+  assert.match(out, /shutting down/);
+});
+
+test("health reports ok and nothing else is exposed there", async () => {
+  const r = await fetch(`${srv.base}/health`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { status: "ok" });
+});

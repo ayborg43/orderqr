@@ -67,6 +67,15 @@ Table QR scan → menu (branch menu) → item + modifiers → basket review
 - M6. Passwords are stored as salted scrypt hashes; sign-up is rate limited per address; logins are throttled per address and restaurant.
 - M7. The platform starts empty; the first restaurant is created via sign-up. A legacy single-restaurant store is upgraded under its own name, and the pre-launch demo tenant (`the-corner-table`) is deleted on boot.
 
+### 4b. Guest safety and data handling
+- S1. A table's QR code carries a secret key; guests need it to order, call staff, watch orders or see the bill. QR images are manager-only. A manager can reissue a code per table.
+- S2. Guests only see the current visit of their table (cleared by staff, 2h idle, 12h maximum). Order lookup by number is staff-only; invoices and receipts need the order's private token.
+- S3. Public endpoints are rate limited and capped (orders per table and per address, unfinished orders per table, order size, one open staff call per table).
+- S4. Staff sessions are bound to the account's password and the restaurant's identity.
+- S5. The service charge defaults to 0%.
+- S6. Staff order lists are paged (kitchen: unfinished only; admin: unfinished plus 24h, older on demand).
+- S7. Postgres stores one row per order; only changed rows are written; a single-writer lock prevents two instances overwriting each other; failed writes surface as 503 and are retried.
+
 ## 5. Non-functional
 
 - N1. Works on mobile browsers, no install, no guest account.

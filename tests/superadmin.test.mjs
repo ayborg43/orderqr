@@ -29,7 +29,7 @@ test("restaurant staff sessions never open the super admin, and vice versa", asy
 });
 
 test("overview sees every restaurant with order and collection totals", async () => {
-  await req("POST", `/api/r/${REST}/orders`, { body: { tableId: "3", idempotencyKey: "sa-1", items: [{ menuItemId: "fries", qty: 1 }] } });
+  await req("POST", `/api/r/${REST}/orders`, { body: { ...srv.k("3"), idempotencyKey: "sa-1", items: [{ menuItemId: "fries", qty: 1 }] } });
   const ov = await req("GET", "/api/superadmin/overview", { cookie: saCookie });
   assert.equal(ov.status, 200);
   const rest = ov.body.restaurants.find((r) => r.slug === REST);
@@ -40,7 +40,7 @@ test("overview sees every restaurant with order and collection totals", async ()
 });
 
 test("super admin can confirm collection and reset a staff password", async () => {
-  const orders = await req("GET", `/api/r/${REST}/orders?table=3`);
+  const orders = await req("GET", `/api/r/${REST}/orders?${srv.q("3")}`);
   const id = orders.body.orders[0].id;
   const confirmed = await req("POST", `/api/superadmin/restaurants/${REST}/orders/${id}/confirm-payment`, { cookie: saCookie });
   assert.equal(confirmed.status, 200);

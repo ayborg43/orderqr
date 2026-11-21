@@ -8,7 +8,9 @@ let srv, req;
 const signup = (body) => req("POST", "/api/restaurants", { body });
 const A = { name: "Lagos Grill House", username: "ayo", password: "correct-horse-1", kitchenPassword: "kitchen-pass-1", tables: 4 };
 const B = { name: "Abuja Suya Spot", username: "bola", password: "battery-staple-2", tables: 6, sampleMenu: false };
-let ckA, ckB, ckKitchenA;
+let ckA, ckB, ckKitchenA, kA = {}, kB = {};
+const gA = (id) => ({ tableId: id, k: kA[id] }), gB = (id) => ({ tableId: id, k: kB[id] });
+const keysOf = async (slug, cookie) => Object.fromEntries((await req("GET", `/api/r/${slug}/tables`, { cookie })).body.tables.map((t) => [t.id, t.key]));
 
 before(async () => {
   srv = await startServer(3196);
@@ -23,7 +25,7 @@ test("signup creates a restaurant with its own address, tables, menu and a manag
   assert.equal(a.body.adminUrl, "/r/lagos-grill-house/admin");
   assert.match(a.cookie, /qr_staff_lagos-grill-house=/);
   ckA = cookieOf(a.cookie);
-  assert.equal((await req("GET", "/api/r/lagos-grill-house/tables")).body.tables.length, 4);
+  assert.equal((await req("GET", "/api/r/lagos-grill-house/tables", { cookie: ckA })).body.tables.length, 4);
   assert.ok((await req("GET", "/api/r/lagos-grill-house/menu")).body.items.length > 5, "sample menu");
   assert.equal((await req("GET", "/api/r/lagos-grill-house/", {})).body.name, "Lagos Grill House");
   assert.equal((await req("GET", "/api/r/lagos-grill-house/auth/me", { cookie: ckA })).body.role, "manager");
@@ -32,7 +34,9 @@ test("signup creates a restaurant with its own address, tables, menu and a manag
   assert.equal(b.status, 201);
   ckB = cookieOf(b.cookie);
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/menu")).body.items.length, 0, "empty menu when sample is off");
-  assert.equal((await req("GET", "/api/r/abuja-suya-spot/tables")).body.tables.length, 6);
+  assert.equal((await req("GET", "/api/r/abuja-suya-spot/tables", { cookie: ckB })).body.tables.length, 6);
+  kA = await keysOf("lagos-grill-house", ckA); kB = await keysOf("abuja-suya-spot", ckB);
+  assert.ok(Object.values(kA).every((k) => k && k.length >= 8), "every table gets a secret key");
 });
 
 test("signup validates name, address, username and passwords", async () => {
@@ -79,21 +83,22 @@ test("a manager session only works for its own restaurant", async () => {
 });
 
 test("orders, tickets and assist requests stay inside their restaurant", async () => {
-  const o = await req("POST", "/api/r/lagos-grill-house/orders", { body: { tableId: "2", idempotencyKey: "iso-1", items: [{ menuItemId: "fries", qty: 2 }] } });
+  const o = await req("POST", "/api/r/lagos-grill-house/orders", { body: { ...gA("2"), idempotencyKey: "iso-1", items: [{ menuItemId: "fries", qty: 2 }] } });
   assert.equal(o.status, 201);
   assert.equal(o.body.order.id, "ORD-1001", "order numbers start at 1001 per restaurant");
   assert.equal((await req("GET", "/api/r/lagos-grill-house/orders", { cookie: ckA })).body.orders.length, 1);
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/orders", { cookie: ckB })).body.orders.length, 0);
-  assert.equal((await req("GET", "/api/r/abuja-suya-spot/orders/ORD-1001")).status, 404, "B cannot read A's order");
+  assert.equal((await req("GET", "/api/r/lagos-grill-house/orders/ORD-1001")).status, 401, "order lookup by number is staff-only now");
+  assert.equal((await req("GET", "/api/r/abuja-suya-spot/orders/ORD-1001", { cookie: ckB })).status, 404, "B's manager cannot read A's order");
   // The same idempotency key in another restaurant is a different order.
-  const o2 = await req("POST", `/api/r/${DEMO}/orders`, { body: { tableId: "2", idempotencyKey: "iso-1", items: [{ menuItemId: "fries", qty: 1 }] } });
+  const o2 = await req("POST", `/api/r/${DEMO}/orders`, { body: { ...srv.k("2"), idempotencyKey: "iso-1", items: [{ menuItemId: "fries", qty: 1 }] } });
   assert.equal(o2.status, 201); assert.notEqual(o2.body.duplicate, true); // test-restaurant is a third tenant
   // Assist
-  assert.equal((await req("POST", "/api/r/lagos-grill-house/assist", { body: { tableId: "1" } })).status, 201);
+  assert.equal((await req("POST", "/api/r/lagos-grill-house/assist", { body: { ...gA("1") } })).status, 201);
   assert.equal((await req("GET", "/api/r/lagos-grill-house/assist", { cookie: ckA })).body.requests.length, 1);
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/assist", { cookie: ckB })).body.requests.length, 0);
   // B's table ids come from B's own list.
-  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { tableId: "5", items: [{ menuItemId: "fries", qty: 1 }] } })).status, 400, "B has no menu, so no item can be ordered");
+  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { ...gB("5"), items: [{ menuItemId: "fries", qty: 1 }] } })).status, 400, "B has no menu, so no item can be ordered");
 });
 
 test("managers edit their own menu, and other restaurants never see it", async () => {
@@ -103,8 +108,8 @@ test("managers edit their own menu, and other restaurants never see it", async (
   assert.equal((await req("GET", "/api/r/abuja-suya-spot/menu")).body.items.length, 1);
   assert.ok(!(await req("GET", "/api/r/lagos-grill-house/menu")).body.items.some((i) => i.id === "beef-suya"));
   // A guest can order B's dish at B only.
-  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { tableId: "5", items: [{ menuItemId: "beef-suya", qty: 2 }] } })).status, 201);
-  assert.equal((await req("POST", "/api/r/lagos-grill-house/orders", { body: { tableId: "1", items: [{ menuItemId: "beef-suya", qty: 1 }] } })).status, 400);
+  assert.equal((await req("POST", "/api/r/abuja-suya-spot/orders", { body: { ...gB("5"), items: [{ menuItemId: "beef-suya", qty: 2 }] } })).status, 201);
+  assert.equal((await req("POST", "/api/r/lagos-grill-house/orders", { body: { ...gA("1"), items: [{ menuItemId: "beef-suya", qty: 1 }] } })).status, 400);
   // Edit and delete
   assert.equal((await req("PATCH", "/api/r/abuja-suya-spot/menu/beef-suya", { cookie: ckB, body: { price: 4000, name: "Beef Suya (large)" } })).body.item.price, 4000);
   const dup = await req("POST", "/api/r/abuja-suya-spot/menu", { cookie: ckB, body: { name: "Beef Suya", price: 100, category: "Mains", station: "Grill" } });
@@ -136,10 +141,10 @@ test("kitchen staff cannot manage the menu; a kitchen login is created when a pa
 test("tables can be added and removed by the manager", async () => {
   const add = await req("POST", "/api/r/abuja-suya-spot/tables", { cookie: ckB, body: {} });
   assert.equal(add.status, 201); assert.equal(add.body.table.id, "7");
-  assert.equal((await req("GET", "/api/r/abuja-suya-spot/tables")).body.tables.length, 7);
+  assert.equal((await req("GET", "/api/r/abuja-suya-spot/tables", { cookie: ckB })).body.tables.length, 7);
   assert.equal((await req("DELETE", "/api/r/abuja-suya-spot/tables/7", { cookie: ckB })).status, 200);
   assert.equal((await req("DELETE", "/api/r/abuja-suya-spot/tables/7", { cookie: ckB })).status, 404);
-  assert.equal((await req("GET", "/api/r/lagos-grill-house/tables")).body.tables.length, 4, "A unaffected");
+  assert.equal((await req("GET", "/api/r/lagos-grill-house/tables", { cookie: ckA })).body.tables.length, 4, "A unaffected");
 });
 
 test("the restaurant name can be changed without touching other restaurants", async () => {
@@ -186,7 +191,10 @@ test("the platform starts empty and upgrades a single-restaurant store under its
     const info = await c2("GET", "/api/r/old-name/");
     assert.equal(info.body.name, "Old Name"); assert.equal(info.body.demo, undefined);
     assert.equal((await c2("GET", "/api/r/old-name/menu")).body.items[0].id, "tea");
-    assert.equal((await c2("GET", "/api/r/old-name/orders?table=1")).body.orders.length, 1, "existing orders survive the upgrade");
+    // Tables from before keys have none, so existing printed QR codes keep working until a manager issues new ones.
+    assert.equal((await c2("GET", "/api/r/old-name/table?table=1")).status, 200);
+    assert.equal((await c2("GET", "/api/r/old-name/orders?table=1")).body.orders.length, 0, "orders from before table visits are never shown to guests");
+    assert.equal((await c2("POST", "/api/r/old-name/orders", { body: { tableId: "1", items: [{ menuItemId: "tea", qty: 1 }] } })).status, 201, "a keyless legacy table still orders");
     // The old demo tenant is removed on boot, and the platform otherwise starts empty.
     assert.equal((await c2("GET", "/api/r/the-corner-table/")).status, 404);
   } finally { s2.stop(); }

@@ -43,15 +43,44 @@ starts empty — there is no demo restaurant and there are no default logins.
   person, any staff member confirms collection in admin or the kitchen display,
   and only then can the guest open that order's invoice and receipt (printable
   pages, saveable as PDF) from their order on the guest page.
+- **Service charge.** Optional and **0% by default** (it was a silent 1.5% "card
+  surcharge" before, though the app takes no card payments; restaurants still on exactly
+  that old default are reset to 0 once on boot). Managers can set it in admin, and it is
+  itemised as "Service charge" on the guest basket and bills.
+- **Table QR codes are secret.** Each table has its own key, printed inside its QR code
+  (`/r/<slug>/guest?table=5&k=KEY`). Guests need it to order, call staff, watch their
+  order or see their bill, so someone who only knows a restaurant and a table number
+  cannot. Only a signed-in manager can fetch the QR images (`/qr`), because they carry
+  the key. A manager can issue a new code per table ("New QR": the printed card stops
+  working) or "Clear table" (the next diner starts with an empty order list and bill).
+  Tables created before keys existed have none and keep working until a manager clicks
+  "Secure QR" on them and reprints the card.
+- **A table's visit.** Guests only see the orders of the table's current visit, which
+  ends when the table is cleared, sits idle for 2 hours, or passes 12 hours. A guest
+  never sees a previous diner's orders or bill. Invoice and receipt links carry the
+  order's own private token, and order lookup by number is staff-only.
+- **Abuse limits** on the public endpoints: 6 orders per table per 10 minutes, 30 per
+  address per hour, 15 unfinished orders per table, 40 lines / 200 portions per order,
+  one open staff call per table. Sign-ups default to 5 per address per hour
+  (`SIGNUP_PER_HOUR`).
+- **Sessions** are bound to the account they were issued for: resetting a password,
+  or deleting and re-registering an address, ends every old session. (Sessions issued
+  before this change stop working once, so staff sign in again after the upgrade.)
 - In production (`NODE_ENV=production`) the server refuses to start without
   `SESSION_SECRET` and `PUBLIC_BASE_URL`.
 - Data persists to Postgres when `DATABASE_URL` is set, otherwise to
   `data/store.json` (override the folder with `DATA_DIR`). A store from the
   single-restaurant version is upgraded in place under its own name.
+- **Staff order lists are paged.** The kitchen loads only unfinished orders; admin loads
+  unfinished orders plus the last 24 hours and has a "Load older orders" button.
 
 ## Deploy on Dokploy (recommended)
 
-The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml). Data lives in **Postgres** (one row per restaurant, JSONB document): the compose file runs a `db` service on the `orderqr-db-data` volume, the app connects via `DATABASE_URL`, and `GET /health` backs the container healthcheck. On first boot an empty database imports the legacy `data/store.json` once (from the kept `orderqr-data` volume); after that Postgres is the source of truth. Without `DATABASE_URL` (local dev, tests, Vercel) the app falls back to the JSON file store.
+The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml). Data lives in **Postgres** (a small JSONB row per restaurant for settings, menu, tables and staff, plus **one row per order**, so a new order is a single tiny write however much history exists): the compose file runs a `db` service on the `orderqr-db-data` volume, the app connects via `DATABASE_URL`, and `GET /health` backs the container healthcheck. On first boot an empty database imports the legacy `data/store.json` once (from the kept `orderqr-data` volume); after that Postgres is the source of truth. Without `DATABASE_URL` (local dev, tests, Vercel) the app falls back to the JSON file store. An older database that kept orders inside the restaurant row is upgraded automatically on boot.
+
+**Run one instance.** The app keeps its data in memory and writes changes through, so it holds a Postgres advisory lock: a second instance on the same database waits (and does not serve) until the first stops, instead of overwriting its data. A rolling deploy therefore hands over cleanly. If the database connection drops, the app exits and Docker's `restart: unless-stopped` brings it back once Postgres is up; a write that fails is answered with a 503 (never reported as success), kept, and retried every few seconds, and `/health` returns 503 while the database is unreachable. On `docker stop` / redeploy the app finishes pending writes, releases the lock and exits in under a second.
+
+**Backups (required before real restaurants use it).** Nothing backs the database up by default. In Dokploy enable scheduled backups for the Postgres service (or schedule `pg_dump -Fc` from the host to storage off the server), and test a restore once. The `orderqr-db-data` volume is the only copy of the data.
 
 **Option A — Compose (full setup):** in Dokploy create a **Compose** service from this repo (`docker-compose.yml`), then under **Domains** add your domain for service `app`, port `3000`, HTTPS on. Set the variables from [.env.example](.env.example) in the **Environment** tab — `SESSION_SECRET` and `POSTGRES_PASSWORD` are required (letters/numbers only for the latter; it is embedded in `DATABASE_URL`), and `PUBLIC_BASE_URL` must be `https://chopdesk.propertypadi.com` before printing QR codes. Deploy; check `https://chopdesk.propertypadi.com/health` returns `{"status":"ok"}`.
 

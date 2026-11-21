@@ -12,7 +12,7 @@
 <header class="a-head">
   <div class="a-head__in">
     <div class="a-brand"><span id="restName"></span><small>Front of house</small></div>
-    <nav class="a-nav" aria-label="Sections"><a href="#orders">Orders</a><a href="#menu">Menu</a><a href="#tables">Tables &amp; QR</a><a href="#settings">Surcharges</a></nav>
+    <nav class="a-nav" aria-label="Sections"><a href="#orders">Orders</a><a href="#menu">Menu</a><a href="#tables">Tables &amp; QR</a><a href="#settings">Service charge</a></nav>
     <span class="staff-user" id="staffUser"></span>
     <button class="btn small ghost" type="button" id="signOut" hidden>Sign out</button>
     <a class="btn small ghost a-home" href="/" id="homeLink">Home</a>
@@ -40,7 +40,7 @@
   </section>
 
   <section class="a-sec" id="settings">
-    <div class="a-sec__head"><div><h2>Surcharges</h2><p class="muted">Applied at guest checkout and itemised on the bill.</p></div></div>
+    <div class="a-sec__head"><div><h2>Service charge</h2><p class="muted">Optional. It starts at 0%, and when set it is added to every order and itemised on the bill. The holiday surcharge applies only while holiday mode is on.</p></div></div>
     <div class="panel pad" id="settingsBox"></div>
   </section>
 </main>
@@ -71,7 +71,7 @@
 <script>
 const { $, $$, esc, fmt, icon, glaze, send, api, ensureStaff, wireSignOut } = UI;
 const FILTERS = [['', 'All'], ['Received', 'Received'], ['Preparing', 'Preparing'], ['Ready', 'Ready'], ['Served', 'Served'], ['Cancelled', 'Cancelled'], ['PaymentFailed', 'Payment failed']];
-let status = '', allOrders = [], settingsDirty = false, tablesKey = '', showAll = false;
+let status = '', allOrders = [], settingsDirty = false, tablesKey = '', recentOrders = [], olderOrders = [], serverHasMore = false, serverTotal = 0, loadingOlder = false;
 const LIMIT = 25, LABEL = { PaymentFailed: 'Payment failed' };
 let menuItems = [];
 const STATIONS = ['Grill', 'Kitchen', 'Drinks', 'Dessert'], DIET = [['vegan', 'Vegan'], ['vegetarian', 'Vegetarian'], ['gluten-free', 'Gluten-free'], ['spicy', 'Spicy']];
@@ -99,6 +99,20 @@ async function setOrderStatus(id, to, revert) {
   load();
 }
 let ordersStale = false;
+const seqOf = (o) => parseInt(String(o.id).replace(/\D/g, ''), 10) || 0;
+function mergeOrders() {
+  const byId = new Map(); for (const o of [...olderOrders, ...recentOrders]) byId.set(o.id, o);
+  allOrders = [...byId.values()].sort((x, y) => seqOf(y) - seqOf(x));
+}
+async function loadOlder() {
+  if (loadingOlder || !allOrders.length) return;
+  loadingOlder = true; renderOrders();
+  const before = Math.min(...allOrders.map(seqOf));
+  const { ok, data } = await api(UI.R('/orders?before=' + before + '&limit=100'));
+  loadingOlder = false;
+  if (ok) { olderOrders = olderOrders.concat(data.orders || []); serverHasMore = !!data.hasMore; mergeOrders(); }
+  renderOrders();
+}
 function renderOrders() {
   // Don't rebuild the table while someone has a status menu open: it would snap shut mid-choice.
   if (document.activeElement?.matches?.('.status-sel')) { ordersStale = true; return; }
@@ -106,18 +120,18 @@ function renderOrders() {
   const count = (s) => allOrders.filter(o => !s || o.status === s).length;
   $('#statusFilter').innerHTML = FILTERS.filter(([s]) => !s || count(s) || s === status).map(([s, l]) => `<button class="chip" type="button" data-s="${s}" aria-pressed="${s === status}">${l}<span class="count">${count(s)}</span></button>`).join('');
   const full = allOrders.filter(o => !status || o.status === status);
-  const list = showAll ? full : full.slice(0, LIMIT);
-  $('#ordersNote').textContent = allOrders.length ? `${count('Received') + count('Preparing')} in progress · ${count('Ready')} ready to serve · ${allOrders.length} in total` : 'Orders appear here as guests pay.';
+  const list = full;
+  $('#ordersNote').textContent = allOrders.length ? `${count('Received') + count('Preparing')} in progress · ${count('Ready')} ready to serve · ${serverTotal || allOrders.length} in total · showing open orders and the last 24 hours` : 'Orders appear here as guests order.';
   $('#ordersBox').innerHTML = list.length ? `<table class="dt"><thead><tr><th>Order</th><th>Table</th><th>Items</th><th class="num">Total</th><th>Payment</th><th>Status</th></tr></thead><tbody>
     ${list.map(o => `<tr><td data-label="Order"><span class="id">${esc(o.id)}</span><br><span class="muted">${new Date(o.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></td>
       <td data-label="Table"><strong>${esc(o.tableLabel)}</strong></td>
       <td data-label="Items" class="items">${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join('<br>')}</td>
       <td data-label="Total" class="num">${fmt(o.total)}</td>
       <td data-label="Payment">${o.payment?.state === 'paid' ? `Collected<br><span class="muted">${o.payment.confirmedAt ? new Date(o.payment.confirmedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>` : `<button class="btn small secondary" type="button" data-confirm="${esc(o.id)}">Confirm collected</button>`}</td>
-      <td data-label="Status">${statusCell(o)}</td></tr>`).join('')}</tbody></table>${full.length > list.length ? `<div class="more-orders"><button class="btn secondary" type="button" id="moreOrders">Show all ${full.length} orders</button></div>` : ''}`
+      <td data-label="Status">${statusCell(o)}</td></tr>`).join('')}</tbody></table>${serverHasMore ? `<div class="more-orders"><button class="btn secondary" type="button" id="moreOrders" ${loadingOlder ? 'disabled' : ''}>${loadingOlder ? 'Loading…' : 'Load older orders'}</button></div>` : ''}`
     : `<div class="empty-row">${allOrders.length ? 'No orders with this status.' : 'No orders yet. Place one as a guest and it will show up here.'}</div>`;
 }
-$('#statusFilter').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; status = b.dataset.s; showAll = false; renderOrders(); });
+$('#statusFilter').addEventListener('click', e => { const b = e.target.closest('.chip'); if (!b) return; status = b.dataset.s; renderOrders(); });
 $('#ordersBox').addEventListener('change', e => {
   const sel = e.target.closest('.status-sel'); if (!sel) return;
   const prev = [...sel.options].find(o => o.defaultSelected)?.value;
@@ -125,7 +139,7 @@ $('#ordersBox').addEventListener('change', e => {
 });
 $('#ordersBox').addEventListener('focusout', e => { if (e.target.matches?.('.status-sel') && ordersStale) setTimeout(renderOrders, 150); });
 $('#ordersBox').addEventListener('click', async e => {
-  if (e.target.closest('#moreOrders')) { showAll = true; renderOrders(); return; }
+  if (e.target.closest('#moreOrders')) { loadOlder(); return; }
   const st = e.target.closest('[data-status]');
   if (st) { st.disabled = true; setOrderStatus(st.dataset.status, st.dataset.to, () => { st.disabled = false; }); return; }
   const c = e.target.closest('[data-confirm]'); if (!c) return;
@@ -144,19 +158,20 @@ function renderMenu(m) {
       <label class="switch"><span class="sr">${esc(i.name)} available</span><input type="checkbox" role="switch" ${i.available ? 'checked' : ''} onchange="toggleAvail('${esc(i.id)}',this.checked)"><i></i></label></div>`).join('')}</div>`).join('');
 }
 function renderTables(tables) {
-  const key = tables.map(t => t.id + t.label).join('|'); if (key === tablesKey) return; tablesKey = key;
+  const key = tables.map(t => t.id + t.label + (t.key || '')).join('|'); if (key === tablesKey) return; tablesKey = key;
   $('#tablesBox').innerHTML = tables.map(t => {
     const m = String(t.label).match(/^(.*\S)\s+(\S+)$/);
     return `<div class="tcard"><div class="plaque sm"><span class="plaque__label">${esc(m ? m[1] : 'Table')}</span><span class="plaque__num">${esc(m ? m[2] : t.label)}</span></div>
     <div class="tcard__qr"><img src="/qr?r=${encodeURIComponent(UI.rid)}&table=${encodeURIComponent(t.id)}" alt="QR code for ${esc(t.label)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'QR unavailable — run npm install once. The link below still works.'}))"></div>
-    <a href="/r/${esc(UI.rid)}/guest?table=${encodeURIComponent(t.id)}">Open menu</a><button class="btn small plain rmtable" type="button" data-del="${esc(t.id)}">Remove</button></div>`;
+    <a href="/r/${esc(UI.rid)}/guest?table=${encodeURIComponent(t.id)}${t.key ? '&k=' + encodeURIComponent(t.key) : ''}">Open menu</a>
+    <div class="tcard__acts"><button class="btn small plain" type="button" data-clear="${esc(t.id)}" title="Start the next diner with an empty bill">Clear table</button><button class="btn small plain" type="button" data-rotate="${esc(t.id)}" title="Issue a new QR code; the printed one stops working">${t.key ? 'New QR' : 'Secure QR'}</button><button class="btn small plain rmtable" type="button" data-del="${esc(t.id)}">Remove</button></div></div>`;
   }).join('');
 }
 function renderSettings(s, name) {
   if (settingsDirty) return;
   $('#settingsBox').innerHTML = `<div class="setrow">
     <label class="field name"><span>Restaurant name</span><input type="text" id="restNameInput" maxlength="60" value="${esc(name || '')}"></label>
-    <label class="field pct"><span>Card surcharge</span><input type="text" id="cardPct" inputmode="decimal" value="${esc(s.cardSurchargePct)}"></label>
+    <label class="field pct"><span>Service charge %</span><input type="text" id="cardPct" inputmode="decimal" value="${esc(s.cardSurchargePct)}"></label>
     <label class="field pct"><span>Public-holiday surcharge</span><input type="text" id="holPct" inputmode="decimal" value="${esc(s.holidaySurchargePct)}"></label>
     <label class="toggle"><span class="switch"><input type="checkbox" role="switch" id="holMode" ${s.holidayMode ? 'checked' : ''}><i></i></span>Public-holiday mode</label>
     <div class="row"><button class="btn" type="button" id="saveBtn">Save changes</button><span id="savedMsg"></span></div></div>`;
@@ -164,10 +179,12 @@ function renderSettings(s, name) {
   $('#saveBtn').onclick = saveSettings;
 }
 async function load() {
-  const [oRes, { data: m }, { data: t }, { data: a }] = await Promise.all([api(UI.R('/orders')), api(UI.R('/menu')), api(UI.R('/tables')), api(UI.R('/assist'))]);
+  const [oRes, { data: m }, { data: t }, { data: a }] = await Promise.all([api(UI.R('/orders?scope=recent&limit=200')), api(UI.R('/menu')), api(UI.R('/tables')), api(UI.R('/assist'))]);
   if (oRes.status === 401) return location.reload();
   const { data: o } = oRes;
-  allOrders = (o.orders || []).slice().sort((x, y) => new Date(y.createdAt) - new Date(x.createdAt));
+  recentOrders = o.orders || []; serverTotal = o.total || 0;
+  if (!olderOrders.length) serverHasMore = !!o.hasMore;
+  mergeOrders();
   renderOrders(); renderMenu(m); renderTables(t.tables || []); renderSettings(m.settings, m.restaurant);
   const reqs = a.requests || [];
   $('#assist').innerHTML = reqs.length ? `<div class="a-assist" role="alert">${icon('bell')}<strong>Guests need staff:</strong>${reqs.map(r => `<span class="row" style="gap:8px"><b>${esc(r.tableLabel)}</b><button class="btn small danger" type="button" onclick="doneAssist('${esc(r.id)}')">Done</button></span>`).join('')}</div>` : '';
@@ -220,6 +237,10 @@ $('#dishDelete').onclick = async () => {
 /* --- Tables --- */
 $('#addTable').onclick = async () => { const { ok, data } = await send(UI.R('/tables'), 'POST', {}); if (!ok) return alert(data.error || 'Could not add a table.'); load(); };
 $('#tablesBox').addEventListener('click', async e => {
+  const c = e.target.closest('[data-clear]');
+  if (c) { if (!confirm('Clear this table? The next diner starts with an empty order list and bill.')) return; const { ok } = await send(UI.R('/tables/') + c.dataset.clear + '/close', 'POST'); if (!ok) alert('Could not clear the table.'); return; }
+  const r = e.target.closest('[data-rotate]');
+  if (r) { if (!confirm('Issue a new QR code for this table? The printed card stops working and must be replaced.')) return; const { ok } = await send(UI.R('/tables/') + r.dataset.rotate + '/rotate-key', 'POST'); if (ok) { tablesKey = ''; load(); } else alert('Could not issue a new code.'); return; }
   const b = e.target.closest('[data-del]'); if (!b) return;
   if (!confirm('Remove this table? Its printed QR code will stop working.')) return;
   const { ok } = await send(UI.R('/tables/') + b.dataset.del, 'DELETE'); if (ok) load();

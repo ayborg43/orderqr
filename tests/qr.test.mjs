@@ -30,8 +30,9 @@ function matrixFromText(text) {
   for (let r = 0; r < s; r++) for (let c = 0; c < s; c++) grid[r + 1][c + 1] = qr.modules.data[r * s + c] ? 1 : 0;
   return grid;
 }
-const encodes = async (table, expectedUrl) => {
-  const r = await fetch(`${base}/qr?${table}`);
+// The QR carries the table's secret key, so only a signed-in manager of that restaurant can fetch it.
+const encodes = async (query, expectedUrl, cookie = srv.cookie) => {
+  const r = await fetch(`${base}/qr?${query}`, { headers: { Cookie: cookie } });
   assert.equal(r.status, 200);
   assert.match(r.headers.get("content-type"), /image\/svg\+xml/);
   const svg = await r.text();
@@ -43,18 +44,23 @@ before(async () => {
 });
 after(() => srv?.stop());
 
-test("table QR encodes the canonical production guest URL (https, not request host)", async () => {
-  await encodes("r=test-restaurant&table=5", "https://chopdesk.propertypadi.com/r/test-restaurant/guest?table=5");
-  await encodes("r=test-restaurant&table=12", "https://chopdesk.propertypadi.com/r/test-restaurant/guest?table=12");
+test("table QR encodes the canonical production guest URL and the table's secret key", async () => {
+  await encodes("r=test-restaurant&table=5", `https://chopdesk.propertypadi.com/r/test-restaurant/guest?table=5&k=${srv.keys["5"]}`);
+  await encodes("r=test-restaurant&table=12", `https://chopdesk.propertypadi.com/r/test-restaurant/guest?table=12&k=${srv.keys["12"]}`);
 });
 
-test("a QR without a restaurant is a 404, never a fallback venue", async () => {
-  assert.equal((await fetch(`${base}/qr?table=5`)).status, 404);
+test("QR codes are manager-only, and unknown restaurants or tables get none", async () => {
+  assert.equal((await fetch(`${base}/qr?r=test-restaurant&table=5`)).status, 401, "anonymous visitors cannot read a table key");
+  assert.equal((await fetch(`${base}/qr?table=5`, { headers: { Cookie: srv.cookie } })).status, 404);
+  assert.equal((await fetch(`${base}/qr?r=test-restaurant&table=99`, { headers: { Cookie: srv.cookie } })).status, 404);
+  assert.equal((await fetch(`${base}/qr?r=ghost-place&table=1`, { headers: { Cookie: srv.cookie } })).status, 404);
 });
 
-test("each restaurant's QR points at its own address; unknown restaurants get none", async () => {
+test("each restaurant's QR points at its own address and only its own manager can fetch it", async () => {
   const c = await fetch(`${base}/api/restaurants`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Kano Kitchen", username: "kano", password: "long-enough-pass" }) });
   assert.equal(c.status, 201);
-  await encodes("r=kano-kitchen&table=3", "https://chopdesk.propertypadi.com/r/kano-kitchen/guest?table=3");
-  assert.equal((await fetch(`${base}/qr?r=ghost-place&table=1`)).status, 404);
+  const kano = (c.headers.get("set-cookie") || "").split(";")[0];
+  const keys = Object.fromEntries((await (await fetch(`${base}/api/r/kano-kitchen/tables`, { headers: { Cookie: kano } })).json()).tables.map((t) => [t.id, t.key]));
+  await encodes("r=kano-kitchen&table=3", `https://chopdesk.propertypadi.com/r/kano-kitchen/guest?table=3&k=${keys["3"]}`, kano);
+  assert.equal((await fetch(`${base}/qr?r=kano-kitchen&table=3`, { headers: { Cookie: srv.cookie } })).status, 401, "another restaurant's manager cannot fetch it");
 });

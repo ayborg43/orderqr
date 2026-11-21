@@ -46,29 +46,37 @@ const seedMenu = [
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const money = (n) => Math.round(n * 100) / 100;
-const makeTables = (n) => Array.from({ length: n }, (_, i) => ({ id: String(i + 1), label: `Table ${i + 1}` }));
-const defaultSettings = () => ({ cardSurchargePct: 1.5, holidaySurchargePct: 10, holidayMode: false });
+// Each table has a secret key that is printed inside its QR code, so only someone
+// who has scanned that table can order, call staff, or see its bill. Tables that
+// predate keys have none and keep working until a manager issues a new code.
+const newKey = () => crypto.randomBytes(9).toString("base64url").replace(/[-_]/g, "x").slice(0, 10);
+const makeTables = (n) => Array.from({ length: n }, (_, i) => ({ id: String(i + 1), label: `Table ${i + 1}`, key: newKey() }));
+// `cardSurchargePct` is the optional service charge (the app takes no card payments).
+// It starts at 0: restaurants opt in. `v: 2` marks settings that use this default.
+const defaultSettings = () => ({ cardSurchargePct: 0, holidaySurchargePct: 10, holidayMode: false, v: 2 });
 function newRestaurant({ slug, name, tables = 10, sampleMenu = true }) {
   return {
     slug, name, createdAt: new Date().toISOString(),
     tables: makeTables(tables), menu: sampleMenu ? clone(seedMenu) : [],
-    orders: [], assistRequests: [], settings: defaultSettings(), seq: 1000, staff: [],
+    orders: [], assistRequests: [], settings: defaultSettings(), seq: 1000, staff: [], sessions: {},
   };
 }
 
 /* --- Passwords: scrypt with a per-account salt --- */
 const b64url = (s) => Buffer.from(s).toString("base64url");
 const safeEq = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
-function hashPassword(pw) {
+// Hashing runs off the main thread, so a burst of logins cannot stall every other request.
+const scrypt = (pw, salt) => new Promise((resolve, reject) => crypto.scrypt(String(pw), salt, 32, (e, key) => (e ? reject(e) : resolve(key.toString("base64url")))));
+async function hashPassword(pw) {
   const salt = crypto.randomBytes(16).toString("base64url");
-  return `scrypt$${salt}$${crypto.scryptSync(String(pw), salt, 32).toString("base64url")}`;
+  return `scrypt$${salt}$${await scrypt(pw, salt)}`;
 }
-function checkPassword(pw, stored) {
+async function checkPassword(pw, stored) {
   const [alg, salt, hash] = String(stored || "").split("$");
   if (alg !== "scrypt" || !salt || !hash) return false;
-  return safeEq(crypto.scryptSync(String(pw), salt, 32).toString("base64url"), hash);
+  return safeEq(await scrypt(pw, salt), hash);
 }
-const DUMMY_HASH = hashPassword("not-a-real-password"); // keeps unknown-user logins as slow as real ones
+const DUMMY_HASH = await hashPassword("not-a-real-password"); // keeps unknown-user logins as slow as real ones
 
 /* --- Store: one JSON document { restaurants: { [slug]: restaurant } } --- */
 function migrate(raw) {
@@ -84,45 +92,128 @@ function migrate(raw) {
   } } };
 }
 
-/* Persistence: Postgres when DATABASE_URL is set (Dokploy compose provides
-   it), otherwise the JSON file store (local dev, tests, Vercel). In Postgres
-   each restaurant is one row (slug PK, JSONB document), so saves stay a
-   single upsert per tenant and the existing mutation code is unchanged. */
+/* Persistence. Postgres when DATABASE_URL is set (Dokploy), otherwise a JSON file
+   (local dev, tests, Vercel).
+
+   Postgres layout: a restaurant's settings, menu, tables, staff and so on are one
+   small JSONB row, and every order is its own row, so a new order is one tiny
+   upsert however much data exists. Only what changed is written, and rows are
+   never deleted just because this process does not know about them. A Postgres
+   advisory lock keeps a second instance from running on the same database at the
+   same time (it waits until the first one stops), so two processes can never
+   overwrite each other. A failed write is reported to the caller (503) and kept
+   dirty, then retried every few seconds. */
 const DATABASE_URL = process.env.DATABASE_URL || "";
-let pool = null;
+const DB_LOCK_KEY = 727274;
+let pool = null, lockClient = null;
+class StorageError extends Error {}
+let dirtySeq = 0, fileDirty = false;
+const dirty = { rests: new Map(), orders: new Map(), deleted: new Map() };
+const orderSeq = (o) => parseInt(String(o.id).replace(/\D/g, ""), 10) || 0;
+const markRest = (rest) => { fileDirty = true; dirty.rests.set(rest.slug, ++dirtySeq); };
+const markOrder = (rest, o) => { fileDirty = true; dirty.orders.set(`${rest.slug}|${o.id}`, { slug: rest.slug, o, v: ++dirtySeq }); };
+const markDeleted = (slug) => {
+  fileDirty = true; dirty.deleted.set(slug, ++dirtySeq); dirty.rests.delete(slug);
+  for (const k of [...dirty.orders.keys()]) if (k.startsWith(slug + "|")) dirty.orders.delete(k);
+};
+const hasDirty = () => (pool ? dirty.rests.size + dirty.orders.size + dirty.deleted.size > 0 : fileDirty);
+const markAllDirty = () => { for (const rest of Object.values(store.restaurants)) { markRest(rest); for (const o of rest.orders || []) markOrder(rest, o); } };
+const persist = (rest, order) => { if (rest) markRest(rest); if (order) markOrder(rest, order); return saveStore(); };
+
 async function initDb() {
   const { default: pg } = await import("pg");
-  pool = new pg.Pool({ connectionString: DATABASE_URL, max: 5 });
+  pool = new pg.Pool({ connectionString: DATABASE_URL, max: 6 });
+  // An idle client dropping (database restart, network blip) must not crash the process.
+  pool.on("error", (e) => console.error("Postgres pool error:", e.message));
   await pool.query(`CREATE TABLE IF NOT EXISTS restaurants (
     slug TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS orders (
+    slug TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, data JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (slug, id))`);
+  await pool.query("CREATE INDEX IF NOT EXISTS orders_slug_seq ON orders (slug, seq)");
+  // Single writer: hold this lock for the life of the process.
+  lockClient = await pool.connect();
+  lockClient.on("error", (e) => { console.error("Lost the database lock connection:", e.message); process.exit(1); });
+  const got = (await lockClient.query("SELECT pg_try_advisory_lock($1) AS ok", [DB_LOCK_KEY])).rows[0].ok;
+  if (!got) {
+    console.log("Another instance holds the database lock; waiting for it to stop...");
+    await lockClient.query("SELECT pg_advisory_lock($1)", [DB_LOCK_KEY]);
+    console.log("Database lock acquired.");
+  }
 }
+let importedFromFile = false;
 async function loadFromDb() {
   const { rows } = await pool.query("SELECT data FROM restaurants");
-  if (rows.length) return { restaurants: Object.fromEntries(rows.map((r) => [r.data.slug, r.data])) };
-  // First boot on an empty DB: import the legacy JSON store once, if present.
-  if (existsSync(STORE_FILE)) {
-    try {
-      const raw = migrate(JSON.parse(await readFile(STORE_FILE, "utf8")));
-      console.log(`Imported ${Object.keys(raw.restaurants).length} restaurant(s) from ${STORE_FILE} into Postgres`);
-      return raw;
-    } catch (e) { console.error(`Could not import ${STORE_FILE} (${e.message}); starting fresh`); }
+  if (!rows.length) {
+    // First boot on an empty DB: import the legacy JSON store once, if present.
+    if (existsSync(STORE_FILE)) {
+      try {
+        const raw = migrate(JSON.parse(await readFile(STORE_FILE, "utf8")));
+        console.log(`Imported ${Object.keys(raw.restaurants).length} restaurant(s) from ${STORE_FILE} into Postgres`);
+        importedFromFile = true;
+        return raw;
+      } catch (e) { console.error(`Could not import ${STORE_FILE} (${e.message}); starting fresh`); }
+    }
+    return { restaurants: {} };
   }
-  return { restaurants: {} };
+  const restaurants = {}, embedded = [];
+  for (const r of rows) {
+    const rest = r.data;
+    // Older rows kept every order inside the restaurant document; move them to the orders table.
+    if (Array.isArray(rest.orders) && rest.orders.length) embedded.push(rest);
+    const legacy = Array.isArray(rest.orders) ? rest.orders : [];
+    rest.orders = []; rest._legacyOrders = legacy;
+    restaurants[rest.slug] = rest;
+  }
+  const { rows: orderRows } = await pool.query("SELECT slug, data FROM orders ORDER BY slug, seq");
+  for (const r of orderRows) restaurants[r.slug]?.orders.push(r.data);
+  for (const rest of Object.values(restaurants)) {
+    const have = new Set(rest.orders.map((o) => o.id));
+    for (const o of rest._legacyOrders) if (!have.has(o.id)) { rest.orders.push(o); markOrder(rest, o); }
+    if (rest._legacyOrders.length) { rest.orders.sort((x, y) => orderSeq(x) - orderSeq(y)); markRest(rest); }
+    delete rest._legacyOrders;
+  }
+  if (embedded.length) console.log(`Moved embedded orders of ${embedded.length} restaurant(s) into the orders table`);
+  return { restaurants };
 }
-async function saveToDb() {
-  const rests = Object.values(store.restaurants);
+async function flushDb() {
+  if (!hasDirty()) return;
+  const snap = { rests: new Map(dirty.rests), orders: new Map(dirty.orders), deleted: new Map(dirty.deleted) };
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    for (const rest of rests) {
+    for (const slug of snap.deleted.keys()) {
+      await client.query("DELETE FROM orders WHERE slug = $1", [slug]);
+      await client.query("DELETE FROM restaurants WHERE slug = $1", [slug]);
+    }
+    for (const slug of snap.rests.keys()) {
+      const rest = store.restaurants[slug]; if (!rest) continue;
+      const { orders, ...doc } = rest;
       await client.query(
         "INSERT INTO restaurants (slug, data, updated_at) VALUES ($1, $2, now()) ON CONFLICT (slug) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-        [rest.slug, JSON.stringify(rest)]);
+        [slug, JSON.stringify(doc)]);
     }
-    await client.query("DELETE FROM restaurants WHERE slug <> ALL($1)", [rests.map((r) => r.slug)]);
+    for (const { slug, o } of snap.orders.values()) {
+      await client.query(
+        "INSERT INTO orders (slug, id, seq, data, updated_at) VALUES ($1, $2, $3, $4, now()) ON CONFLICT (slug, id) DO UPDATE SET data = EXCLUDED.data, seq = EXCLUDED.seq, updated_at = now()",
+        [slug, o.id, orderSeq(o), JSON.stringify(o)]);
+    }
     await client.query("COMMIT");
   } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; }
   finally { client.release(); }
+  // Clear only what was written: anything changed again during the write stays dirty.
+  for (const [k, v] of snap.rests) if (dirty.rests.get(k) === v) dirty.rests.delete(k);
+  for (const [k, v] of snap.orders) if (dirty.orders.get(k)?.v === v.v) dirty.orders.delete(k);
+  for (const [k, v] of snap.deleted) if (dirty.deleted.get(k) === v) dirty.deleted.delete(k);
+}
+async function flushFile() {
+  fileDirty = false;
+  try {
+    const tmp = `${STORE_FILE}.tmp`;
+    await mkdir(DATA_DIR, { recursive: true });
+    await writeFile(tmp, JSON.stringify(store));
+    await rename(tmp, STORE_FILE);
+  } catch (e) { fileDirty = true; throw e; }
 }
 
 let store;
@@ -140,32 +231,44 @@ async function loadStore() {
         try { await rename(STORE_FILE, backup); console.error(`store.json unreadable (${e.message}); moved to ${backup}`); } catch {}
       }
     }
+    fileDirty = true;
   }
   if (!store) store = { restaurants: {} };
+  if (importedFromFile) markAllDirty();
   // Production cleanup: the pre-launch demo tenant is deleted, never recreated.
   if (store.restaurants[LEGACY_DEMO_SLUG]) {
-    delete store.restaurants[LEGACY_DEMO_SLUG];
+    delete store.restaurants[LEGACY_DEMO_SLUG]; markDeleted(LEGACY_DEMO_SLUG);
     console.log(`Removed legacy demo restaurant (${LEGACY_DEMO_SLUG})`);
   }
-  // Normalise older payment states to the manual-collection flow.
-  for (const rest of Object.values(store.restaurants)) for (const o of rest.orders || []) {
-    if (o.payment?.state === "pay-at-counter") o.payment.state = "awaiting-collection";
-    if (o.payment?.state === "paid-demo") o.payment = { state: "paid", method: "manual", confirmedAt: o.createdAt };
+  for (const rest of Object.values(store.restaurants)) {
+    rest.sessions ||= {};
+    // The old default silently added a 1.5% "card surcharge" to every order, but the app takes no
+    // card payments. Restaurants that still have exactly that default are reset to no charge once.
+    if (rest.settings && rest.settings.v !== 2) {
+      if (rest.settings.cardSurchargePct === 1.5) rest.settings.cardSurchargePct = 0;
+      rest.settings.v = 2; markRest(rest);
+    }
+    // Normalise older payment states to the manual-collection flow.
+    for (const o of rest.orders || []) {
+      if (o.payment?.state === "pay-at-counter") { o.payment.state = "awaiting-collection"; markOrder(rest, o); }
+      if (o.payment?.state === "paid-demo") { o.payment = { state: "paid", method: "manual", confirmedAt: o.createdAt }; markOrder(rest, o); }
+    }
   }
   await saveStore();
+  // Writes that failed (database hiccup) are retried in the background until they land.
+  setInterval(() => { if (hasDirty()) saveStore().catch(() => {}); }, 5000).unref();
 }
 let saveChain = Promise.resolve();
 function saveStore() {
-  // Serialized writes. On serverless the process may freeze after the
-  // response, so writes are awaited rather than debounced.
-  saveChain = saveChain.then(async () => {
-    if (pool) return saveToDb();
-    const tmp = `${STORE_FILE}.tmp`;
-    await mkdir(DATA_DIR, { recursive: true });
-    await writeFile(tmp, JSON.stringify(store));
-    await rename(tmp, STORE_FILE);
-  }).catch((e) => console.error("store write failed:", e.message));
-  return saveChain;
+  // Serialized writes, awaited by every request that changes data (serverless
+  // functions may freeze right after responding). Rejects with StorageError so
+  // callers never report success for data that was not stored.
+  const run = saveChain.then(async () => {
+    try { if (pool) await flushDb(); else await flushFile(); }
+    catch (e) { console.error("store write failed:", e.message); throw new StorageError(e.message); }
+  });
+  saveChain = run.catch(() => {});
+  return run;
 }
 
 // --- live events (SSE), kept apart per restaurant ---
@@ -195,6 +298,8 @@ const STATUSES = ["Received", "Preparing", "Ready", "Served", "Cancelled"];
 function priceOrder(rest, rawItems) {
   const items = [];
   if (!Array.isArray(rawItems)) return { error: "Basket is empty" };
+  if (rawItems.length > 40) return { error: "That order is too large. Please split it into smaller orders." };
+  if (rawItems.reduce((n, r) => n + (Math.max(1, parseInt(r?.qty, 10) || 1)), 0) > 200) return { error: "That order is too large. Please split it into smaller orders." };
   for (const raw of rawItems) {
     if (!raw || typeof raw !== "object") return { error: "Invalid basket item" };
     const menuItem = rest.menu.find((m) => m.id === raw.menuItemId);
@@ -214,7 +319,7 @@ function priceOrder(rest, rawItems) {
   if (!items.length) return { error: "Basket is empty" };
   const subtotal = money(items.reduce((s, i) => s + i.lineTotal, 0));
   const st = rest.settings, surcharges = [];
-  if (st.cardSurchargePct) surcharges.push({ name: `Card surcharge (${st.cardSurchargePct}%)`, amount: money(subtotal * st.cardSurchargePct / 100) });
+  if (st.cardSurchargePct) surcharges.push({ name: `Service charge (${st.cardSurchargePct}%)`, amount: money(subtotal * st.cardSurchargePct / 100) });
   if (st.holidayMode && st.holidaySurchargePct) surcharges.push({ name: `Public holiday surcharge (${st.holidaySurchargePct}%)`, amount: money(subtotal * st.holidaySurchargePct / 100) });
   const total = money(subtotal + surcharges.reduce((s, x) => s + x.amount, 0));
   return { items, subtotal, surcharges, total };
@@ -242,27 +347,34 @@ if (IS_PROD && !process.env.SESSION_SECRET) console.warn("SESSION_SECRET is not 
 const SESSION_MS = 12 * 60 * 60 * 1000;
 const signPayload = (payload) => crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
 const cookieName = (slug) => `qr_staff_${slug}`;
-function makeSession({ username, role }, slug) {
-  const payload = b64url(JSON.stringify({ u: username, r: role, s: slug, exp: Date.now() + SESSION_MS }));
+// A session is bound to the account it was issued for: the fingerprint covers the restaurant's
+// creation time, the username and the password hash. Resetting the password, removing the account,
+// or deleting and re-registering the address therefore ends every old session at once.
+const fingerprint = (rest, acct) => crypto.createHash("sha256").update(`${rest.createdAt}|${String(acct.username).toLowerCase()}|${acct.hash}`).digest("base64url").slice(0, 22);
+function makeSession(acct, rest) {
+  const payload = b64url(JSON.stringify({ u: acct.username, r: acct.role, s: rest.slug, f: fingerprint(rest, acct), exp: Date.now() + SESSION_MS }));
   return `${payload}.${signPayload(payload)}`;
 }
-function staffFromReq(req, slug) {
-  const prefix = cookieName(slug) + "=";
+function staffFromReq(req, rest) {
+  const prefix = cookieName(rest.slug) + "=";
   const raw = String(req.headers.cookie || "").split(";").map((c) => c.trim()).find((c) => c.startsWith(prefix));
   if (!raw) return null;
   const [payload, sig] = raw.slice(prefix.length).split(".");
   if (!payload || !sig || !safeEq(sig, signPayload(payload))) return null;
   try {
     const s = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return s.u && s.r && s.s === slug && s.exp > Date.now() ? { username: s.u, role: s.r } : null;
+    if (!(s.u && s.r && s.s === rest.slug && s.exp > Date.now())) return null;
+    const acct = rest.staff.find((a) => a.username.toLowerCase() === String(s.u).toLowerCase());
+    if (!acct || acct.role !== s.r || !safeEq(s.f || "", fingerprint(rest, acct))) return null;
+    return { username: acct.username, role: acct.role };
   } catch { return null; }
 }
 function sessionCookie(req, slug, value, maxAgeSec) {
   const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
   return `${cookieName(slug)}=${value}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
 }
-function requireStaff(req, res, slug, roles) {
-  const staff = staffFromReq(req, slug);
+function requireStaff(req, res, rest, roles) {
+  const staff = staffFromReq(req, rest);
   if (!staff) { json(res, 401, { error: "Staff sign-in required", code: "AUTH_REQUIRED" }); return null; }
   if (roles && !roles.includes(staff.role)) { json(res, 403, { error: "Your staff role cannot do this", code: "FORBIDDEN" }); return null; }
   return staff;
@@ -284,10 +396,21 @@ function noteLoginFail(ip, slug) {
 // Signup throttle: 5 new restaurants per IP per hour.
 const signups = new Map();
 const recentSignups = (ip) => (signups.get(ip) || []).filter((t) => Date.now() - t < 3600e3);
-const signupThrottled = (ip) => recentSignups(ip).length >= 5;
+const SIGNUP_LIMIT = parseInt(process.env.SIGNUP_PER_HOUR, 10) || 5; // per address per hour
+const signupThrottled = (ip) => recentSignups(ip).length >= SIGNUP_LIMIT;
 function noteSignup(ip) { if (signups.size > 5000) signups.clear(); signups.set(ip, [...recentSignups(ip), Date.now()]); }
 
-const json = (res, code, body) => { res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify(body)); };
+// Sliding-window style counters for anonymous (guest) endpoints. true = limit exceeded.
+const buckets = new Map();
+function rateHit(key, limit, windowMs) {
+  const now = Date.now();
+  if (buckets.size > 20000) for (const [k, b] of buckets) if (b.reset <= now) buckets.delete(k);
+  let b = buckets.get(key);
+  if (!b || b.reset <= now) { b = { n: 0, reset: now + windowMs }; buckets.set(key, b); }
+  return ++b.n > limit;
+}
+const json = (res, code, body, headers) => { res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers }); res.end(JSON.stringify(body)); };
+const tooMany = (res, msg, retry = 60) => json(res, 429, { error: msg }, { "Retry-After": String(retry) });
 async function bodyJson(req) {
   let s = "";
   for await (const c of req) { s += c; if (s.length > 100_000) { const e = new Error("Request too large"); e.status = 413; throw e; } }
@@ -341,12 +464,14 @@ async function createRestaurant(req, res) {
     if (!Number.isInteger(tables) || tables < 1 || tables > 60) return json(res, 400, { error: "Enter a whole number from 1 to 60.", field: "tables" });
   }
   const rest = newRestaurant({ slug, name, tables, sampleMenu: b.sampleMenu !== false });
-  rest.staff.push({ username, role: "manager", hash: hashPassword(password) });
-  if (kitchenPassword) rest.staff.push({ username: "kitchen", role: "kitchen", hash: hashPassword(kitchenPassword) });
+  rest.staff.push({ username, role: "manager", hash: await hashPassword(password) });
+  if (kitchenPassword) rest.staff.push({ username: "kitchen", role: "kitchen", hash: await hashPassword(kitchenPassword) });
+  if (store.restaurants[slug]) return json(res, 409, { error: "That address is already taken.", field: "slug" }); // lost a race while hashing
   store.restaurants[slug] = rest; noteSignup(ip);
-  await saveStore();
-  res.writeHead(201, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession({ username, role: "manager" }, slug), SESSION_MS / 1000) });
-  res.end(JSON.stringify({ slug, name, adminUrl: `/r/${slug}/admin`, kitchenUser: kitchenPassword ? rest.staff[1].username : null }));
+  try { await persist(rest); }
+  catch (e) { delete store.restaurants[slug]; markDeleted(slug); throw e; } // never keep a restaurant that was not stored
+  res.writeHead(201, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession(rest.staff[0], rest), SESSION_MS / 1000) });
+  res.end(JSON.stringify({ slug, name, adminUrl: `/r/${slug}/admin`, kitchenUser: kitchenPassword ? "kitchen" : null }));
 }
 
 /* --- Printable invoice / receipt (guest opens after payment is confirmed) --- */
@@ -377,14 +502,17 @@ ${isReceipt ? `<p>Payment collected in person by your waiter and confirmed ${o.p
    no restaurant session opens it. Unconfigured (no env) means disabled. */
 const SUPERADMIN = { username: process.env.SUPERADMIN_USER || "", password: process.env.SUPERADMIN_PASSWORD || "" };
 const SA_COOKIE = "qr_superadmin";
+// Bound to the current super admin password: rotating it in the environment ends every session.
+const superFingerprint = () => crypto.createHmac("sha256", SESSION_SECRET).update("superadmin|" + SUPERADMIN.password).digest("base64url").slice(0, 22);
 function superFromReq(req) {
+  if (!SUPERADMIN.username || !SUPERADMIN.password) return null;
   const raw = String(req.headers.cookie || "").split(";").map((c) => c.trim()).find((c) => c.startsWith(SA_COOKIE + "="));
   if (!raw) return null;
   const [payload, sig] = raw.slice(SA_COOKIE.length + 1).split(".");
   if (!payload || !sig || !safeEq(sig, signPayload(payload))) return null;
   try {
     const s = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return s.u && s.r === "superadmin" && s.exp > Date.now() ? { username: s.u, role: "superadmin" } : null;
+    return s.u === SUPERADMIN.username && s.r === "superadmin" && s.exp > Date.now() && safeEq(s.f || "", superFingerprint()) ? { username: s.u, role: "superadmin" } : null;
   } catch { return null; }
 }
 const superCookie = (req, value, maxAgeSec) => `${SA_COOKIE}=${value}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}${req.headers["x-forwarded-proto"] === "https" ? "; Secure" : ""}`;
@@ -413,7 +541,7 @@ async function handleSuperadmin(req, res, url) {
     const ok = safeEq(String(b.username || ""), SUPERADMIN.username) & safeEq(String(b.password || ""), SUPERADMIN.password);
     if (!ok) { noteLoginFail(ip, "__platform__"); return json(res, 401, { error: "Wrong username or password" }); }
     loginFails.delete(failKey(ip, "__platform__"));
-    const payload = b64url(JSON.stringify({ u: SUPERADMIN.username, r: "superadmin", exp: Date.now() + SESSION_MS }));
+    const payload = b64url(JSON.stringify({ u: SUPERADMIN.username, r: "superadmin", f: superFingerprint(), exp: Date.now() + SESSION_MS }));
     res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": superCookie(req, `${payload}.${signPayload(payload)}`, SESSION_MS / 1000) });
     return res.end(JSON.stringify({ user: SUPERADMIN.username, role: "superadmin" }));
   }
@@ -446,7 +574,7 @@ async function handleSuperadmin(req, res, url) {
   if (req.method === "DELETE" && sub === "/") {
     const b = await bodyJson(req);
     if (b.confirm !== rest.slug) return json(res, 400, { error: `Type the restaurant address (${rest.slug}) to confirm deletion.` });
-    delete store.restaurants[rest.slug]; clients.delete(rest.slug);
+    delete store.restaurants[rest.slug]; clients.delete(rest.slug); markDeleted(rest.slug);
     await saveStore();
     return json(res, 200, { ok: true, deleted: rest.slug });
   }
@@ -456,8 +584,8 @@ async function handleSuperadmin(req, res, url) {
     if (!acct) return json(res, 404, { error: "Staff account not found" });
     const b = await bodyJson(req);
     if (String(b.password || "").length < 8 || String(b.password).length > 200) return json(res, 400, { error: "Password must be at least 8 characters." });
-    acct.hash = hashPassword(b.password);
-    await saveStore();
+    acct.hash = await hashPassword(b.password); // also ends that account's existing sessions
+    await persist(rest);
     return json(res, 200, { ok: true, username: acct.username, role: acct.role });
   }
   const confirm = sub.match(/^\/orders\/([\w-]+)\/confirm-payment$/);
@@ -467,7 +595,7 @@ async function handleSuperadmin(req, res, url) {
     if (o.status === "Cancelled") return json(res, 400, { error: "A cancelled order cannot be marked paid" });
     if (o.payment.state !== "paid") {
       o.payment = { state: "paid", method: "manual", confirmedAt: new Date().toISOString(), confirmedBy: `superadmin:${sa.username}` };
-      await saveStore(); broadcast(rest.slug, "order", o);
+      await persist(rest, o); broadcast(rest.slug, "order", o);
     }
     return json(res, 200, { order: o });
   }
@@ -490,20 +618,58 @@ async function handleApi(req, res, url) {
   return handleRestaurantApi(req, res, url, rest, m[2] || "/");
 }
 
+/* --- Guests: sessions, secret table keys, public order view --- */
+const SESSION_IDLE_MS = 2 * 3600e3, SESSION_MAX_MS = 12 * 3600e3;
+const FINAL = new Set(["Served", "Cancelled"]);
+const orderToken = () => crypto.randomBytes(12).toString("hex");
+// A table's "visit": orders belong to it until the table sits idle for 2 hours, the visit passes
+// 12 hours, or staff clear the table. A new diner therefore never sees the previous diner's orders or bill.
+function currentSession(rest, tableId) {
+  const s = rest.sessions?.[tableId], now = Date.now();
+  return s && now - s.lastAt <= SESSION_IDLE_MS && now - s.startedAt <= SESSION_MAX_MS ? s : null;
+}
+function openSession(rest, tableId) {
+  rest.sessions ||= {};
+  const now = Date.now();
+  const s = currentSession(rest, tableId) || (rest.sessions[tableId] = { id: crypto.randomBytes(6).toString("hex"), startedAt: now, lastAt: now });
+  s.lastAt = now; return s;
+}
+function touchSession(rest, o) { const s = rest.sessions?.[o.tableId]; if (s && s.id === o.sessionId) s.lastAt = Date.now(); }
+function tableFor(rest, id, key) {
+  const t = rest.tables.find((x) => x.id === String(id || ""));
+  if (!t) return null;
+  if (t.key && !safeEq(String(key || ""), t.key)) return null;
+  return t;
+}
+// What a guest may see about an order: no staff names, idempotency keys or history.
+const publicOrder = (o) => ({
+  id: o.id, tableId: o.tableId, tableLabel: o.tableLabel, status: o.status, createdAt: o.createdAt,
+  items: o.items.map((i) => ({ name: i.name, qty: i.qty, unitPrice: i.unitPrice, lineTotal: i.lineTotal, note: i.note, modifiers: (i.modifiers || []).map((m) => ({ group: m.group, name: m.name })) })),
+  subtotal: o.subtotal, surcharges: o.surcharges, total: o.total,
+  payment: { state: o.payment?.state, confirmedAt: o.payment?.confirmedAt }, token: o.token,
+});
+function guestOrders(rest, tableId) {
+  const s = currentSession(rest, tableId);
+  return s ? rest.orders.filter((o) => o.tableId === tableId && o.sessionId === s.id).reverse().map(publicOrder) : [];
+}
+function notifyTable(slug, tableId) {
+  const set = tableClients.get(`${slug}|${tableId}`);
+  if (set) for (const res of set) { try { res.write(`event: order\ndata: {}\n\n`); } catch { set.delete(res); } }
+}
+
 async function handleRestaurantApi(req, res, url, rest, p) {
-  const slug = rest.slug, staffOnly = (roles) => requireStaff(req, res, slug, roles);
+  const slug = rest.slug, staffOnly = (roles) => requireStaff(req, res, rest, roles), ip = clientIp(req);
   if (req.method === "GET" && p === "/") return json(res, 200, { slug, name: rest.name });
 
   // --- auth ---
   if (req.method === "POST" && p === "/auth/login") {
-    const ip = clientIp(req);
-    if (loginThrottled(ip, slug)) return json(res, 429, { error: "Too many failed sign-ins. Try again in a few minutes." });
+    if (loginThrottled(ip, slug)) return tooMany(res, "Too many failed sign-ins. Try again in a few minutes.", 300);
     const b = await bodyJson(req);
     const acct = rest.staff.find((a) => a.username.toLowerCase() === String(b.username || "").trim().toLowerCase());
-    const ok = checkPassword(b.password || "", acct ? acct.hash : DUMMY_HASH) && !!acct;
+    const ok = (await checkPassword(b.password || "", acct ? acct.hash : DUMMY_HASH)) && !!acct;
     if (!ok) { noteLoginFail(ip, slug); return json(res, 401, { error: "Wrong username or password" }); }
     loginFails.delete(failKey(ip, slug));
-    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession(acct, slug), SESSION_MS / 1000) });
+    res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie(req, slug, makeSession(acct, rest), SESSION_MS / 1000) });
     return res.end(JSON.stringify({ user: acct.username, role: acct.role }));
   }
   if (req.method === "POST" && p === "/auth/logout") {
@@ -511,51 +677,83 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     return res.end(JSON.stringify({ ok: true }));
   }
   if (req.method === "GET" && p === "/auth/me") {
-    const staff = staffFromReq(req, slug);
+    const staff = staffFromReq(req, rest);
     return staff ? json(res, 200, { user: staff.username, role: staff.role }) : json(res, 401, { error: "Staff sign-in required", code: "AUTH_REQUIRED" });
   }
 
   // --- guest-facing reads ---
   if (req.method === "GET" && p === "/menu") return json(res, 200, { restaurant: rest.name, slug, items: rest.menu, settings: rest.settings });
-  if (req.method === "GET" && p === "/tables") return json(res, 200, { tables: rest.tables });
+  // A guest proves they scanned the table by presenting its key; only id and label come back.
+  if (req.method === "GET" && p === "/table") {
+    const t = tableFor(rest, url.searchParams.get("table"), url.searchParams.get("k"));
+    return t ? json(res, 200, { table: { id: t.id, label: t.label } }) : json(res, 404, { error: "This QR code doesn’t match a table." });
+  }
 
   if (req.method === "POST" && p === "/orders/preview") {
+    if (rateHit(`prev:${ip}`, 120, 60e3)) return tooMany(res, "Slow down a little and try again.");
     const b = await bodyJson(req); const priced = priceOrder(rest, b.items);
     return priced.error ? json(res, 400, priced) : json(res, 200, priced);
   }
 
   if (req.method === "POST" && p === "/orders") {
     const b = await bodyJson(req);
-    const table = rest.tables.find((t) => t.id === String(b.tableId));
+    const table = tableFor(rest, b.tableId, b.k);
     if (!table) return json(res, 400, { error: "Invalid table. Please scan the QR code on your table again." });
     if (b.idempotencyKey) {
       const dup = rest.orders.find((o) => o.idempotencyKey === b.idempotencyKey && o.tableId === table.id);
-      if (dup) return json(res, 200, { order: dup, duplicate: true });
+      if (dup) return json(res, 200, { order: publicOrder(dup), duplicate: true });
     }
     const priced = priceOrder(rest, b.items);
     if (priced.error) return json(res, 400, priced);
+    // Anonymous endpoint: keep one table or one address from burying the kitchen.
+    const cur = currentSession(rest, table.id);
+    if (cur && rest.orders.filter((o) => o.sessionId === cur.id && !FINAL.has(o.status)).length >= 15) return tooMany(res, "This table already has many open orders. Please ask your waiter.", 120);
+    if (rateHit(`ord:${slug}:${table.id}`, 6, 10 * 60e3) || rateHit(`ordip:${slug}:${ip}`, 30, 3600e3)) return tooMany(res, "You’re ordering very quickly. Please wait a few minutes, or ask your waiter.", 300);
+    const sess = openSession(rest, table.id);
     const order = {
-      id: `ORD-${++rest.seq}`, tableId: table.id, tableLabel: table.label,
+      id: `ORD-${++rest.seq}`, tableId: table.id, tableLabel: table.label, sessionId: sess.id, token: orderToken(),
       items: priced.items, subtotal: priced.subtotal, surcharges: priced.surcharges, total: priced.total,
       status: "Received", payment: { state: "awaiting-collection" },
-      idempotencyKey: b.idempotencyKey || null, createdAt: new Date().toISOString(),
+      idempotencyKey: b.idempotencyKey ? String(b.idempotencyKey).slice(0, 80) : null, createdAt: new Date().toISOString(),
       history: [{ status: "Received", at: new Date().toISOString() }],
     };
-    rest.orders.push(order); await saveStore();
+    rest.orders.push(order); await persist(rest, order);
     broadcast(slug, "order", order);
-    return json(res, 201, { order });
+    return json(res, 201, { order: publicOrder(order) });
   }
 
   const orderMatch = p.match(/^\/orders\/([\w-]+)$/);
-  if (req.method === "GET" && orderMatch) {
-    const o = rest.orders.find((x) => x.id === orderMatch[1]);
-    return o ? json(res, 200, { order: o }) : json(res, 404, { error: "Order not found" });
-  }
   if (req.method === "GET" && p === "/orders") {
     const tableId = url.searchParams.get("table");
-    if (!tableId && !staffOnly()) return;
-    const list = rest.orders.filter((o) => !tableId || o.tableId === tableId).slice().reverse();
-    return json(res, 200, { orders: list });
+    if (tableId) {
+      // Guest view: only this table's current visit, and only after proving the QR was scanned.
+      const t = tableFor(rest, tableId, url.searchParams.get("k"));
+      if (!t) return json(res, 400, { error: "Invalid table" });
+      return json(res, 200, { orders: guestOrders(rest, t.id) });
+    }
+    // Staff view, paged so the screens never download every order ever placed:
+    //   scope=open   unfinished orders (kitchen)
+    //   scope=recent open orders plus the last 24 hours (admin default)
+    //   before=N     orders older than ORD-N, newest first (admin "load older")
+    if (!staffOnly()) return;
+    const scope = url.searchParams.get("scope") || "recent";
+    const before = parseInt(url.searchParams.get("before"), 10) || 0;
+    const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit"), 10) || 200));
+    const open = (o) => !FINAL.has(o.status);
+    let list, hasMore = false;
+    if (scope === "open") list = rest.orders.filter(open).reverse();
+    else if (before) { const older = rest.orders.filter((o) => orderSeq(o) < before).reverse(); hasMore = older.length > limit; list = older.slice(0, limit); }
+    else {
+      const cutoff = Date.now() - 24 * 3600e3;
+      const recent = rest.orders.filter((o) => open(o) || Date.parse(o.createdAt) >= cutoff).reverse();
+      list = recent.slice(0, limit); hasMore = recent.length > limit || rest.orders.length > recent.length;
+    }
+    return json(res, 200, { orders: list, hasMore, total: rest.orders.length });
+  }
+  if (req.method === "GET" && orderMatch) {
+    if (!staffOnly()) return;
+    const o = rest.orders.find((x) => x.id === orderMatch[1]);
+    return o ? json(res, 200, { order: o }) : json(res, 404, { error: "Order not found" });
   }
   if (req.method === "PATCH" && orderMatch) {
     if (!staffOnly()) return;
@@ -563,8 +761,8 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     if (!o) return json(res, 404, { error: "Order not found" });
     const b = await bodyJson(req);
     if (!STATUSES.includes(b.status)) return json(res, 400, { error: "Invalid status" });
-    o.status = b.status; o.history.push({ status: b.status, at: new Date().toISOString() });
-    await saveStore(); broadcast(slug, "order", o);
+    o.status = b.status; o.history.push({ status: b.status, at: new Date().toISOString() }); touchSession(rest, o);
+    await persist(rest, o); broadcast(slug, "order", o);
     return json(res, 200, { order: o });
   }
 
@@ -576,28 +774,33 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     if (!o) return json(res, 404, { error: "Order not found" });
     if (o.status === "Cancelled") return json(res, 400, { error: "A cancelled order cannot be marked paid" });
     if (o.payment.state !== "paid") {
-      o.payment = { state: "paid", method: "manual", confirmedAt: new Date().toISOString(), confirmedBy: staff.username };
-      await saveStore(); broadcast(slug, "order", o);
+      o.payment = { state: "paid", method: "manual", confirmedAt: new Date().toISOString(), confirmedBy: staff.username }; touchSession(rest, o);
+      await persist(rest, o); broadcast(slug, "order", o);
     }
     return json(res, 200, { order: o });
   }
+  // Invoice / receipt: opened from the guest's own order card via its private token, once collection is confirmed.
   const docMatch = p.match(/^\/orders\/([\w-]+)\/(invoice|receipt)$/);
   if (req.method === "GET" && docMatch) {
     const o = rest.orders.find((x) => x.id === docMatch[1]);
-    if (!o) return json(res, 404, { error: "Order not found" });
-    if (String(url.searchParams.get("table") || "") !== String(o.tableId)) return docLocked(res, "This document belongs to another table.");
+    if (!o || !o.token || !safeEq(String(url.searchParams.get("t") || ""), o.token)) return docLocked(res, "This link isn’t valid. Open it from your order on the menu page.");
     if (o.payment.state !== "paid") return docLocked(res, "Available once your waiter has collected payment and staff confirm it here.");
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "private, no-store" });
     return res.end(docPage(rest, o, docMatch[2]));
   }
 
   // --- assistance requests ---
   if (req.method === "POST" && p === "/assist") {
     const b = await bodyJson(req);
-    const table = rest.tables.find((t) => t.id === String(b.tableId));
+    const table = tableFor(rest, b.tableId, b.k);
     if (!table) return json(res, 400, { error: "Invalid table" });
+    const openReq = rest.assistRequests.find((r) => r.tableId === table.id && !r.done);
+    if (openReq) return json(res, 200, { request: openReq, already: true }); // one open call per table
+    if (rateHit(`as:${slug}:${ip}`, 20, 3600e3)) return tooMany(res, "Staff have been called several times already. Please wave to a team member.", 300);
+    const day = Date.now() - 24 * 3600e3;
+    rest.assistRequests = rest.assistRequests.filter((r) => !r.done || Date.parse(r.at) > day).slice(-300);
     const reqObj = { id: crypto.randomUUID(), tableId: table.id, tableLabel: table.label, at: new Date().toISOString(), done: false };
-    rest.assistRequests.push(reqObj); await saveStore(); broadcast(slug, "assist", reqObj);
+    rest.assistRequests.push(reqObj); await persist(rest); broadcast(slug, "assist", reqObj);
     return json(res, 201, { request: reqObj });
   }
   if (req.method === "GET" && p === "/assist") { if (!staffOnly()) return; return json(res, 200, { requests: rest.assistRequests.filter((r) => !r.done).slice().reverse() }); }
@@ -606,7 +809,7 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     if (!staffOnly()) return;
     const r = rest.assistRequests.find((x) => x.id === assistDone[1]);
     if (!r) return json(res, 404, { error: "Request not found" });
-    r.done = true; await saveStore(); broadcast(slug, "assist", r); return json(res, 200, { ok: true });
+    r.done = true; await persist(rest); broadcast(slug, "assist", r); return json(res, 200, { ok: true });
   }
 
   // --- menu management (manager) ---
@@ -617,7 +820,7 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     const base = slugify(c.value.name) || "dish"; let id = base, n = 2;
     while (rest.menu.some((m) => m.id === id)) id = `${base}-${n++}`;
     const item = { id, available: true, modifierGroups: [], ...c.value };
-    rest.menu.push(item); await saveStore(); broadcast(slug, "menu", item);
+    rest.menu.push(item); await persist(rest); broadcast(slug, "menu", item);
     return json(res, 201, { item });
   }
   const menuItem = p.match(/^\/menu\/([\w-]+)$/);
@@ -625,9 +828,9 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     if (!staffOnly(["manager"])) return;
     const item = rest.menu.find((m) => m.id === menuItem[1]);
     if (!item) return json(res, 404, { error: "Item not found" });
-    if (req.method === "DELETE") { rest.menu = rest.menu.filter((m) => m !== item); await saveStore(); broadcast(slug, "menu", { id: item.id, deleted: true }); return json(res, 200, { ok: true }); }
+    if (req.method === "DELETE") { rest.menu = rest.menu.filter((m) => m !== item); await persist(rest); broadcast(slug, "menu", { id: item.id, deleted: true }); return json(res, 200, { ok: true }); }
     const c = cleanDish(await bodyJson(req), true); if (c.error) return json(res, 400, c);
-    Object.assign(item, c.value); await saveStore(); broadcast(slug, "menu", item);
+    Object.assign(item, c.value); await persist(rest); broadcast(slug, "menu", item);
     return json(res, 200, { item });
   }
   const menuAvail = p.match(/^\/menu\/([\w-]+)\/availability$/);
@@ -636,17 +839,18 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     const item = rest.menu.find((m) => m.id === menuAvail[1]);
     if (!item) return json(res, 404, { error: "Item not found" });
     const b = await bodyJson(req); item.available = !!b.available;
-    await saveStore(); broadcast(slug, "menu", item); return json(res, 200, { item });
+    await persist(rest); broadcast(slug, "menu", item); return json(res, 200, { item });
   }
 
   // --- tables (manager) ---
+  if (req.method === "GET" && p === "/tables") { if (!staffOnly(["manager"])) return; return json(res, 200, { tables: rest.tables }); }
   if (req.method === "POST" && p === "/tables") {
     if (!staffOnly(["manager"])) return;
     if (rest.tables.length >= 100) return json(res, 400, { error: "A restaurant can have up to 100 tables." });
     const b = await bodyJson(req);
     const nextId = String(rest.tables.reduce((mx, t) => Math.max(mx, parseInt(t.id, 10) || 0), 0) + 1);
     const label = String(b.label || "").trim().slice(0, 30) || `Table ${nextId}`;
-    const table = { id: nextId, label }; rest.tables.push(table); await saveStore();
+    const table = { id: nextId, label, key: newKey() }; rest.tables.push(table); await persist(rest);
     return json(res, 201, { table });
   }
   const tableMatch = p.match(/^\/tables\/([\w-]+)$/);
@@ -654,7 +858,24 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     if (!staffOnly(["manager"])) return;
     const before = rest.tables.length; rest.tables = rest.tables.filter((t) => t.id !== tableMatch[1]);
     if (rest.tables.length === before) return json(res, 404, { error: "Table not found" });
-    await saveStore(); return json(res, 200, { ok: true });
+    delete rest.sessions?.[tableMatch[1]];
+    await persist(rest); return json(res, 200, { ok: true });
+  }
+  // New secret for a table's QR code (also upgrades older keyless tables). The old printed code stops working.
+  const rotate = p.match(/^\/tables\/([\w-]+)\/rotate-key$/);
+  if (req.method === "POST" && rotate) {
+    if (!staffOnly(["manager"])) return;
+    const t = rest.tables.find((x) => x.id === rotate[1]); if (!t) return json(res, 404, { error: "Table not found" });
+    t.key = newKey(); delete rest.sessions?.[t.id]; await persist(rest); notifyTable(slug, t.id);
+    return json(res, 200, { table: t });
+  }
+  // End the current visit: the next diner starts with an empty order list and bill.
+  const closeTable = p.match(/^\/tables\/([\w-]+)\/close$/);
+  if (req.method === "POST" && closeTable) {
+    if (!staffOnly()) return;
+    const t = rest.tables.find((x) => x.id === closeTable[1]); if (!t) return json(res, 404, { error: "Table not found" });
+    delete rest.sessions?.[t.id]; await persist(rest); notifyTable(slug, t.id);
+    return json(res, 200, { ok: true });
   }
 
   // --- settings (manager) ---
@@ -666,12 +887,12 @@ async function handleRestaurantApi(req, res, url, rest, p) {
       if (n.length < 2 || n.length > 60) return json(res, 400, { error: "Restaurant name must be 2–60 characters." });
       rest.name = n;
     }
-    if (b.cardSurchargePct !== undefined && !pct(b.cardSurchargePct)) return json(res, 400, { error: "Card surcharge must be between 0 and 100." });
+    if (b.cardSurchargePct !== undefined && !pct(b.cardSurchargePct)) return json(res, 400, { error: "Service charge must be between 0 and 100." });
     if (b.holidaySurchargePct !== undefined && !pct(b.holidaySurchargePct)) return json(res, 400, { error: "Holiday surcharge must be between 0 and 100." });
     if (typeof b.holidayMode === "boolean") st.holidayMode = b.holidayMode;
     if (b.cardSurchargePct !== undefined) st.cardSurchargePct = b.cardSurchargePct;
     if (b.holidaySurchargePct !== undefined) st.holidaySurchargePct = b.holidaySurchargePct;
-    await saveStore(); broadcast(slug, "settings", st); return json(res, 200, { settings: st, restaurant: rest.name });
+    await persist(rest); broadcast(slug, "settings", st); return json(res, 200, { settings: st, restaurant: rest.name });
   }
 
   if (req.method === "GET" && p === "/events") {
@@ -679,9 +900,9 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     if (!clients.has(slug)) clients.set(slug, new Set());
     return openStream(req, res, clients.get(slug));
   }
-  // Public live feed for one table: pushes {id,status} whenever one of its orders changes.
+  // Guest live feed for one table: pushes {id,status} whenever one of its orders changes.
   if (req.method === "GET" && p === "/table-events") {
-    const table = rest.tables.find((t) => t.id === String(url.searchParams.get("table") || ""));
+    const table = tableFor(rest, url.searchParams.get("table"), url.searchParams.get("k"));
     if (!table) return json(res, 400, { error: "Invalid table" });
     const key = `${slug}|${table.id}`;
     if (!tableClients.has(key)) tableClients.set(key, new Set());
@@ -716,33 +937,46 @@ async function serveStatic(req, res, url) {
 }
 
 await loadStore();
+let shuttingDown = false;
 export async function appHandler(req, res) {
   let url;
   try { url = new URL(req.url, `http://${req.headers.host || "localhost"}`); } catch { res.writeHead(400); return res.end("Bad request"); }
   try {
-    if (url.pathname === "/health" || url.pathname === "/api/health") return json(res, 200, { status: "ok" });
+    if (url.pathname === "/health" || url.pathname === "/api/health") {
+      if (shuttingDown) return json(res, 503, { status: "shutting-down" });
+      if (pool) {
+        try { await Promise.race([pool.query("SELECT 1"), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 2000))]); }
+        catch { return json(res, 503, { status: "database-unavailable" }); }
+      }
+      return json(res, 200, { status: "ok" });
+    }
     if (url.pathname === "/qr" || url.pathname === "/api/qr") {
-      // QR SVG for a table link, using optional `qrcode` package; falls back to text page.
-      // The code must point at the public site a phone can open — never at the
-      // host that happened to serve this image (localhost, a preview deploy,
-      // or an http:// origin). PUBLIC_BASE_URL wins; on Vercel fall back to
-      // the production domain; locally use the request origin (LAN demos).
+      // QR SVG for a table, for managers only: the code carries the table's secret key, so it must
+      // not be fetchable by anyone who merely knows the restaurant and table number.
+      // It points at the public site a phone can open (PUBLIC_BASE_URL, or on Vercel the production domain),
+      // never at whatever host served this image.
       const slug = String(url.searchParams.get("r") || "").toLowerCase();
-      if (!Object.prototype.hasOwnProperty.call(store.restaurants, slug)) return notFoundPage(res, "Restaurant");
+      const rest = Object.prototype.hasOwnProperty.call(store.restaurants, slug) ? store.restaurants[slug] : null;
+      if (!rest) return notFoundPage(res, "Restaurant");
+      const staff = staffFromReq(req, rest);
+      if (!staff || staff.role !== "manager") return json(res, 401, { error: "Manager sign-in required", code: "AUTH_REQUIRED" });
+      const table = rest.tables.find((t) => t.id === String(url.searchParams.get("table") || ""));
+      if (!table) return notFoundPage(res, "Table");
       const envBase = String(process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
       const publicBase = envBase || (process.env.VERCEL
         ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || "chopdesk.propertypadi.com"}`
         : url.origin);
-      const target = `${publicBase}/r/${slug}/guest?table=${encodeURIComponent(url.searchParams.get("table") || "")}`;
+      const target = `${publicBase}/r/${slug}/guest?table=${encodeURIComponent(table.id)}${table.key ? `&k=${encodeURIComponent(table.key)}` : ""}`;
       try {
         const QRCode = (await import("qrcode")).default;
         const svg = await QRCode.toString(target, { type: "svg", margin: 1, width: 240 });
-        res.writeHead(200, { "Content-Type": "image/svg+xml" }); return res.end(svg);
-      } catch { res.writeHead(200, { "Content-Type": "text/html" }); return res.end(`<p>QR package not installed. Table link:</p><p><a href="${target.replace(/[<>"&]/g, "")}">${target.replace(/[<>"&]/g, "")}</a></p>`); }
+        res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-store" }); return res.end(svg);
+      } catch { res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "private, no-store" }); return res.end(`<p>QR package not installed. Table link:</p><p><a href="${htmlEsc(target)}">${htmlEsc(target)}</a></p>`); }
     }
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);
   } catch (e) {
+    if (e instanceof StorageError) return json(res, 503, { error: "We couldn’t save that just now. Please try again in a moment.", code: "STORAGE" });
     if (!e?.status) console.error(e);
     if (!res.headersSent) json(res, e?.status || 500, { error: e?.status ? e.message : "Something went wrong. Please try again." });
   }
@@ -752,5 +986,24 @@ export default appHandler;
 // Local run (`npm start`): long-lived server. On Vercel this file is imported
 // by api/[...path].js as a serverless function instead, so do not listen there.
 if (!process.env.VERCEL) {
-  http.createServer(appHandler).listen(PORT, () => console.log(`Chopdesk running at http://localhost:${PORT}`));
+  const server = http.createServer(appHandler);
+  server.listen(PORT, () => console.log(`Chopdesk running at http://localhost:${PORT}`));
+  // Graceful stop (docker stop / redeploy): refuse new work, close live streams, flush pending writes, release the DB.
+  // Node as a container's main process ignores SIGTERM unless it handles it, which means a 10s wait and a hard kill.
+  const shutdown = async (sig) => {
+    if (shuttingDown) return;
+    shuttingDown = true; console.log(`${sig} received: shutting down`);
+    const hard = setTimeout(() => process.exit(1), 8000); hard.unref();
+    server.close(); server.closeIdleConnections?.();
+    for (const set of [...clients.values(), ...tableClients.values()]) for (const res of set) { try { res.end(); } catch {} }
+    try {
+      await saveChain; if (hasDirty()) await saveStore();
+      // Hand the single-writer lock back before closing the pool, or pool.end() waits on it forever.
+      if (lockClient) { await lockClient.query("SELECT pg_advisory_unlock($1)", [DB_LOCK_KEY]).catch(() => {}); lockClient.release(); }
+      await pool?.end();
+    } catch (e) { console.error("shutdown flush failed:", e.message); }
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }

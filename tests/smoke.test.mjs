@@ -18,13 +18,14 @@ before(async () => {
 after(() => srv?.stop());
 
 test("an order is priced, surcharged, marked awaiting-collection and idempotent", async () => {
-  const payload = { tableId: "5", idempotencyKey: "test-key-1",
+  const payload = { ...srv.k("5"), idempotencyKey: "test-key-1",
     items: [{ menuItemId: "smash-burger", qty: 1, modifiers: ["medium", "cheese"], note: "no onion" }, { menuItemId: "fresh-lemonade", qty: 1, modifiers: ["regular"] }] };
   const first = await post("/orders", payload);
   assert.equal(first.status, 201);
   assert.equal(first.body.order.tableId, "5");
   assert.equal(first.body.order.subtotal, 23); // (16.5+1.5) + 5
-  assert.ok(first.body.order.total > first.body.order.subtotal, "surcharge applied");
+  assert.equal(first.body.order.total, 23, "no service charge unless the restaurant sets one");
+  assert.deepEqual(first.body.order.surcharges, []);
   assert.equal(first.body.order.payment.state, "awaiting-collection");
   assert.equal(first.body.order.status, "Received");
   assert.equal(first.body.order.items[0].note, "no onion");
@@ -33,20 +34,32 @@ test("an order is priced, surcharged, marked awaiting-collection and idempotent"
   assert.equal(dup.body.duplicate, true);
 });
 
+test("a service charge is itemised only when the manager turns it on", async () => {
+  assert.equal((await patch("/settings", { cardSurchargePct: 10 })).status, 200);
+  try {
+    const r = await post("/orders/preview", { items: [{ menuItemId: "fries", qty: 2 }] });
+    assert.equal(r.body.subtotal, 13);
+    assert.equal(r.body.surcharges[0].name, "Service charge (10%)");
+    assert.equal(r.body.total, 14.3);
+  } finally { await patch("/settings", { cardSurchargePct: 0 }); }
+  const off = await post("/orders/preview", { items: [{ menuItemId: "fries", qty: 2 }] });
+  assert.equal(off.body.total, 13);
+});
+
 test("card details are ignored: orders never take payment online", async () => {
-  const r = await post("/orders", { tableId: "5", idempotencyKey: "test-key-2", payment: { cardNumber: "4000 0000 0000 0002" }, items: [{ menuItemId: "fries", qty: 1, modifiers: [] }] });
+  const r = await post("/orders", { ...srv.k("5"), idempotencyKey: "test-key-2", payment: { cardNumber: "4000 0000 0000 0002" }, items: [{ menuItemId: "fries", qty: 1, modifiers: [] }] });
   assert.equal(r.status, 201);
   assert.equal(r.body.order.payment.state, "awaiting-collection");
 });
 
 test("invalid table and missing required modifier are rejected", async () => {
-  assert.equal((await post("/orders", { tableId: "999", items: [{ menuItemId: "fries", qty: 1 }] })).status, 400);
-  assert.equal((await post("/orders", { tableId: "5", items: [{ menuItemId: "smash-burger", qty: 1, modifiers: [] }] })).status, 400);
+  assert.equal((await post("/orders", { ...srv.k("999"), items: [{ menuItemId: "fries", qty: 1 }] })).status, 400);
+  assert.equal((await post("/orders", { ...srv.k("5"), items: [{ menuItemId: "smash-burger", qty: 1, modifiers: [] }] })).status, 400);
 });
 
 test("malformed baskets are rejected with 400, not a server error", async () => {
-  assert.equal((await post("/orders", { tableId: "5", items: [null] })).status, 400);
-  assert.equal((await post("/orders", { tableId: "5", items: "fries" })).status, 400);
+  assert.equal((await post("/orders", { ...srv.k("5"), items: [null] })).status, 400);
+  assert.equal((await post("/orders", { ...srv.k("5"), items: "fries" })).status, 400);
   assert.equal((await post("/orders/preview", { items: [42] })).status, 400);
 });
 
@@ -58,22 +71,23 @@ test("a duplicated modifier id is only charged once", async () => {
 
 test("sold-out item is rejected at submit and status can advance", async () => {
   await patch("/menu/fries/availability", { available: false });
-  const r = await post("/orders", { tableId: "5", items: [{ menuItemId: "fries", qty: 1 }] });
+  const r = await post("/orders", { ...srv.k("5"), items: [{ menuItemId: "fries", qty: 1 }] });
   assert.equal(r.status, 400); assert.match(r.body.error, /Sold out/);
   await patch("/menu/fries/availability", { available: true });
-  const ok = await post("/orders", { tableId: "6", idempotencyKey: "test-key-3", items: [{ menuItemId: "fries", qty: 1 }] });
+  const ok = await post("/orders", { ...srv.k("6"), idempotencyKey: "test-key-3", items: [{ menuItemId: "fries", qty: 1 }] });
   const adv = await patch(`/orders/${ok.body.order.id}`, { status: "Preparing" });
   assert.equal(adv.body.order.status, "Preparing");
 });
 
 test("waiter-collected payment unlocks guest invoice and receipt", async () => {
-  const placed = await post("/orders", { tableId: "7", idempotencyKey: "pay-flow-1", items: [{ menuItemId: "fries", qty: 2 }] });
+  const placed = await post("/orders", { ...srv.k("7"), idempotencyKey: "pay-flow-1", items: [{ menuItemId: "fries", qty: 2 }] });
   assert.equal(placed.status, 201);
-  const id = placed.body.order.id;
+  const id = placed.body.order.id, t = placed.body.order.token;
+  assert.ok(t && t.length >= 16, "the guest receives a private token for this order");
   assert.equal(placed.body.order.payment.state, "awaiting-collection");
   // No documents before the waiter collects and staff confirm.
   for (const doc of ["invoice", "receipt"]) {
-    const r = await fetch(`${srv.base}${API}/orders/${id}/${doc}?table=7`);
+    const r = await fetch(`${srv.base}${API}/orders/${id}/${doc}?t=${t}`);
     assert.equal(r.status, 403, doc + " locked before payment");
   }
   // Guests cannot confirm their own payment; staff can.
@@ -82,15 +96,16 @@ test("waiter-collected payment unlocks guest invoice and receipt", async () => {
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.order.payment.state, "paid");
   assert.ok(confirmed.body.order.payment.confirmedAt);
-  // Both documents now open for that table, and only that table.
+  // Both documents now open for the holder of the order's private token, and nobody else.
   for (const doc of ["invoice", "receipt"]) {
-    const r = await fetch(`${srv.base}${API}/orders/${id}/${doc}?table=7`);
+    const r = await fetch(`${srv.base}${API}/orders/${id}/${doc}?t=${t}`);
     assert.equal(r.status, 200, doc);
     const html = await r.text();
     assert.match(html, new RegExp(doc.toUpperCase()));
     assert.match(html, /Hand-Cut Fries/);
     assert.match(html, /PAID|Paid/);
-    assert.equal((await fetch(`${srv.base}${API}/orders/${id}/${doc}?table=9`)).status, 403, doc + " wrong table");
+    assert.equal((await fetch(`${srv.base}${API}/orders/${id}/${doc}?t=wrong`)).status, 403, doc + " wrong token");
+    assert.equal((await fetch(`${srv.base}${API}/orders/${id}/${doc}?table=7`)).status, 403, doc + " table id alone is not enough");
   }
 });
 
@@ -98,7 +113,7 @@ test("settings reject out-of-range percentages", async () => {
   assert.equal((await patch("/settings", { cardSurchargePct: -90 })).status, 400);
   assert.equal((await patch("/settings", { holidaySurchargePct: 100000 })).status, 400);
   assert.equal((await patch("/settings", { cardSurchargePct: 2.5 })).status, 200);
-  assert.equal((await patch("/settings", { cardSurchargePct: 1.5 })).status, 200);
+  assert.equal((await patch("/settings", { cardSurchargePct: 0 })).status, 200);
 });
 
 test("a malformed Host header does not crash the server", async () => {
@@ -107,15 +122,15 @@ test("a malformed Host header does not crash the server", async () => {
     const s = net.connect(3199, "localhost", () => s.write("GET / HTTP/1.1\r\nHost: a b\r\nConnection: close\r\n\r\n"));
     s.on("data", () => {}); s.on("close", resolve); s.on("error", resolve);
   });
-  assert.equal((await req("GET", `${API}/tables`)).status, 200);
+  assert.equal((await req("GET", `${API}/menu`)).status, 200);
 });
 
 test("guests get a live push when staff change their table's order status", async () => {
-  const placed = await post("/orders", { tableId: "7", idempotencyKey: "live-1", items: [{ menuItemId: "fries", qty: 1 }] });
+  const placed = await post("/orders", { ...srv.k("7"), idempotencyKey: "live-1", items: [{ menuItemId: "fries", qty: 1 }] });
   assert.equal(placed.status, 201);
   const id = placed.body.order.id;
   const ac = new AbortController();
-  const res = await fetch(`${srv.base}${API}/table-events?table=7`, { signal: ac.signal });
+  const res = await fetch(`${srv.base}${API}/table-events?${srv.q("7")}`, { signal: ac.signal });
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type"), /text\/event-stream/);
   const reader = res.body.getReader(), dec = new TextDecoder();
@@ -126,7 +141,7 @@ test("guests get a live push when staff change their table's order status", asyn
     await patch(`/orders/${id}`, { status: "Preparing" });
     await until(new RegExp(`"id":"${id}","status":"Preparing"`));
     // Another table's changes are not delivered here.
-    const other = await post("/orders", { tableId: "8", idempotencyKey: "live-2", items: [{ menuItemId: "fries", qty: 1 }] });
+    const other = await post("/orders", { ...srv.k("8"), idempotencyKey: "live-2", items: [{ menuItemId: "fries", qty: 1 }] });
     buf = ""; await patch(`/orders/${other.body.order.id}`, { status: "Ready" });
     await new Promise((r) => setTimeout(r, 300));
     assert.ok(!buf.includes(other.body.order.id), "table 7 must not see table 8's orders");
@@ -135,5 +150,6 @@ test("guests get a live push when staff change their table's order status", asyn
 
 test("the live feed rejects unknown tables and API responses are never cached", async () => {
   assert.equal((await fetch(`${srv.base}${API}/table-events?table=999`)).status, 400);
+  assert.equal((await fetch(`${srv.base}${API}/table-events?table=7`)).status, 400, "the table key is required");
   assert.equal((await fetch(`${srv.base}${API}/menu`)).headers.get("cache-control"), "no-store");
 });
