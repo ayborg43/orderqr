@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /$
+Allow: /signup
+Allow: /login
+Disallow: /r/
+Disallow: /api/
+Disallow: /superadmin
+Disallow: /qr

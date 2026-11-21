@@ -1,9 +1,12 @@
 import http from "node:http";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
+import { promisify } from "node:util";
+const gzipAsync = promisify(zlib.gzip), brotliAsync = promisify(zlib.brotliCompress);
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -208,6 +211,7 @@ async function flushDb() {
 }
 async function flushFile() {
   fileDirty = false;
+  dirty.rests.clear(); dirty.orders.clear(); dirty.deleted.clear(); // the whole file is rewritten, so nothing needs tracking
   try {
     const tmp = `${STORE_FILE}.tmp`;
     await mkdir(DATA_DIR, { recursive: true });
@@ -284,13 +288,27 @@ function broadcast(slug, event, data) {
     if (tset) { const m = `event: order\ndata: ${JSON.stringify({ id: data.id, status: data.status })}\n\n`; for (const res of tset) { try { res.write(m); } catch { tset.delete(res); } } }
   }
 }
-// Open an event stream. Pings keep idle connections alive through proxies (Traefik, nginx).
-function openStream(req, res, set) {
+// Open an event stream. Pings keep idle connections alive through proxies (Traefik, nginx). Streams are
+// capped per address, per address and restaurant (a restaurant's guests share one Wi-Fi address, so that cap is
+// generous), and overall, so one client cannot hold the server's memory and sockets hostage.
+const STREAM_CAPS = { perIp: parseInt(process.env.STREAMS_PER_IP, 10) || 600, perIpRest: parseInt(process.env.STREAMS_PER_IP_RESTAURANT, 10) || 300, total: parseInt(process.env.MAX_STREAMS, 10) || 5000 };
+const streamCount = { total: 0, ip: new Map(), ipRest: new Map() };
+const bump = (m, k, d) => { const n = (m.get(k) || 0) + d; if (n <= 0) m.delete(k); else m.set(k, n); };
+function openStream(req, res, set, slug) {
+  const ip = clientIp(req), k2 = `${ip}|${slug}`;
+  if (streamCount.total >= STREAM_CAPS.total || (streamCount.ip.get(ip) || 0) >= STREAM_CAPS.perIp || (streamCount.ipRest.get(k2) || 0) >= STREAM_CAPS.perIpRest)
+    return tooMany(res, "Too many live connections from this address. Close some tabs and try again.", 30);
+  streamCount.total++; bump(streamCount.ip, ip, 1); bump(streamCount.ipRest, k2, 1);
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
   res.write(`retry: 3000\nevent: ready\ndata: {}\n\n`);
   set.add(res);
   const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 20000);
-  req.on("close", () => { clearInterval(ping); set.delete(res); });
+  let closed = false;
+  req.on("close", () => {
+    if (closed) return; closed = true;
+    clearInterval(ping); set.delete(res);
+    streamCount.total--; bump(streamCount.ip, ip, -1); bump(streamCount.ipRest, k2, -1);
+  });
 }
 
 const STATUSES = ["Received", "Preparing", "Ready", "Served", "Cancelled"];
@@ -379,11 +397,19 @@ function requireStaff(req, res, rest, roles) {
   if (roles && !roles.includes(staff.role)) { json(res, 403, { error: "Your staff role cannot do this", code: "FORBIDDEN" }); return null; }
   return staff;
 }
-// Client address: only trust X-Forwarded-For where a platform proxy sets it
-// (Vercel, or TRUST_PROXY=1 behind Dokploy/Traefik/nginx). Otherwise a proxy
-// would bucket every guest under one IP for the throttles below.
-const TRUST_PROXY = !!process.env.VERCEL || /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || "");
-const clientIp = (req) => (TRUST_PROXY ? String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() : "") || req.socket?.remoteAddress || "?";
+// Client address. X-Forwarded-For is only believed when a proxy we run sets it: TRUST_PROXY is the
+// number of proxy hops in front of the app (1 for Traefik/nginx, 2 for Cloudflare + Traefik; "true" = 1;
+// Vercel counts as 1). A proxy appends the address it saw to the END of the header, so the entry that many
+// places from the right is the real client; anything a visitor put in front of it is ignored. (The first
+// entry is attacker-controlled, which would let anyone dodge the login and signup limits by rotating it.)
+const TRUST_HOPS = process.env.VERCEL ? 1 : /^\d+$/.test(process.env.TRUST_PROXY || "") ? parseInt(process.env.TRUST_PROXY, 10) : /^(true|yes)$/i.test(process.env.TRUST_PROXY || "") ? 1 : 0;
+function clientIp(req) {
+  if (TRUST_HOPS > 0) {
+    const chain = String(req.headers["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean);
+    if (chain.length >= TRUST_HOPS) return chain[chain.length - TRUST_HOPS];
+  }
+  return req.socket?.remoteAddress || "?";
+}
 // Login throttle: 8 failures per IP and restaurant per 5 minutes.
 const loginFails = new Map();
 const failKey = (ip, slug) => `${slug}|${ip}`;
@@ -409,7 +435,20 @@ function rateHit(key, limit, windowMs) {
   if (!b || b.reset <= now) { b = { n: 0, reset: now + windowMs }; buckets.set(key, b); }
   return ++b.n > limit;
 }
-const json = (res, code, body, headers) => { res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers }); res.end(JSON.stringify(body)); };
+// JSON replies over 1 KB are gzipped for clients that accept it (a busy admin list is ~130 KB of repetitive JSON).
+const json = (res, code, body, headers) => {
+  const buf = Buffer.from(JSON.stringify(body));
+  const h = { "Content-Type": "application/json", "Cache-Control": "no-store", Vary: "Accept-Encoding", ...headers };
+  if (buf.length > 1024 && res.acceptsGzip) {
+    zlib.gzip(buf, (err, z) => {
+      if (res.writableEnded || res.headersSent) return;
+      if (err) { res.writeHead(code, { ...h, "Content-Length": buf.length }); return res.end(buf); }
+      res.writeHead(code, { ...h, "Content-Encoding": "gzip", "Content-Length": z.length }); res.end(z);
+    });
+    return;
+  }
+  res.writeHead(code, { ...h, "Content-Length": buf.length }); res.end(buf);
+};
 const tooMany = (res, msg, retry = 60) => json(res, 429, { error: msg }, { "Retry-After": String(retry) });
 async function bodyJson(req) {
   let s = "";
@@ -476,6 +515,9 @@ async function createRestaurant(req, res) {
 
 /* --- Printable invoice / receipt (guest opens after payment is confirmed) --- */
 const htmlEsc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Receipts are printed on the server, so format times in the restaurant's own zone, not the server's (UTC in Docker).
+const APP_TZ = process.env.APP_TIMEZONE || "Africa/Lagos";
+const docTime = (iso) => new Date(iso).toLocaleString("en-NG", { timeZone: APP_TZ, year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
 const docMoney = (n) => "₦" + Number(n).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function docLocked(res, msg) {
   res.writeHead(403, { "Content-Type": "text/html" });
@@ -489,11 +531,11 @@ function docPage(rest, o, kind) {
 <title>${isReceipt ? "RECEIPT" : "INVOICE"} ${htmlEsc(o.id)} — ${htmlEsc(rest.name)}</title>
 <style>body{margin:0;background:#fff;color:#1a221d;font:15px/1.5 system-ui,sans-serif}main{max-width:36rem;margin:2rem auto;padding:0 1.25rem}h1{letter-spacing:.08em;margin:.2rem 0}.paid{display:inline-block;border:2px solid #0e3727;color:#0e3727;font-weight:800;letter-spacing:.1em;padding:.15rem .6rem;border-radius:.4rem;transform:rotate(-3deg)}table{width:100%;border-collapse:collapse;margin:1rem 0}td,th{padding:.4rem .2rem;border-bottom:1px solid #e5e0cf;text-align:left;vertical-align:top}.n{text-align:right;white-space:nowrap}.tot td{font-weight:800;font-size:1.05rem;border-top:2px solid #1a221d}button{padding:.6rem 1.2rem;border-radius:999px;border:0;background:#0e3727;color:#fff;font-weight:700;cursor:pointer}@media print{button{display:none}}</style>
 <main><p>${htmlEsc(rest.name)}</p><h1>${isReceipt ? "RECEIPT" : "INVOICE"}</h1>
-<p>Order <b>${htmlEsc(o.id)}</b> · ${htmlEsc(o.tableLabel)}<br>Ordered ${new Date(o.createdAt).toLocaleString()}<br><span class="paid">PAID</span></p>
+<p>Order <b>${htmlEsc(o.id)}</b> · ${htmlEsc(o.tableLabel)}<br>Ordered ${docTime(o.createdAt)}<br><span class="paid">PAID</span></p>
 <table><tr><th>Item</th><th class="n">Each</th><th class="n">Total</th></tr>${rows}
 <tr><td colspan="2">Subtotal</td><td class="n">${docMoney(o.subtotal)}</td></tr>${sur}
 <tr class="tot"><td colspan="2">Total ${isReceipt ? "paid" : ""}</td><td class="n">${docMoney(o.total)}</td></tr></table>
-${isReceipt ? `<p>Payment collected in person by your waiter and confirmed ${o.payment.confirmedAt ? "on " + new Date(o.payment.confirmedAt).toLocaleString() : ""}. Thank you.</p>` : `<p>Payment for this order has been collected in person and confirmed. This invoice records the amount paid.</p>`}
+${isReceipt ? `<p>Payment collected in person by your waiter and confirmed ${o.payment.confirmedAt ? "on " + docTime(o.payment.confirmedAt) : ""}. Thank you.</p>` : `<p>Payment for this order has been collected in person and confirmed. This invoice records the amount paid.</p>`}
 <button onclick="window.print()">Print / save as PDF</button></main>`;
 }
 
@@ -575,6 +617,7 @@ async function handleSuperadmin(req, res, url) {
     const b = await bodyJson(req);
     if (b.confirm !== rest.slug) return json(res, 400, { error: `Type the restaurant address (${rest.slug}) to confirm deletion.` });
     delete store.restaurants[rest.slug]; clients.delete(rest.slug); markDeleted(rest.slug);
+    for (const k of [...tableClients.keys()]) if (k.startsWith(rest.slug + "|")) tableClients.delete(k);
     await saveStore();
     return json(res, 200, { ok: true, deleted: rest.slug });
   }
@@ -898,7 +941,7 @@ async function handleRestaurantApi(req, res, url, rest, p) {
   if (req.method === "GET" && p === "/events") {
     if (!staffOnly()) return;
     if (!clients.has(slug)) clients.set(slug, new Set());
-    return openStream(req, res, clients.get(slug));
+    return openStream(req, res, clients.get(slug), slug);
   }
   // Guest live feed for one table: pushes {id,status} whenever one of its orders changes.
   if (req.method === "GET" && p === "/table-events") {
@@ -908,23 +951,41 @@ async function handleRestaurantApi(req, res, url, rest, p) {
     if (!tableClients.has(key)) tableClients.set(key, new Set());
     const set = tableClients.get(key);
     if (set.size >= 30) return json(res, 429, { error: "Too many open connections for this table" });
-    return openStream(req, res, set);
+    return openStream(req, res, set, slug);
   }
   return json(res, 404, { error: "Not found" });
 }
 
-const MIME = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
+const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8", ".woff2": "font/woff2" };
+const COMPRESSIBLE = new Set([".html", ".css", ".js", ".json", ".svg", ".txt"]);
+// Cache policy: pages revalidate every time (a cheap 304 via ETag) so deploys show up at once; CSS and JS may be
+// reused for 10 minutes; fonts never change under the same name.
+const CACHE = { ".html": "no-cache", ".css": "public, max-age=600", ".js": "public, max-age=600", ".woff2": "public, max-age=2592000, immutable", ".svg": "public, max-age=86400", ".txt": "public, max-age=3600" };
+const staticCache = new Map(); // path -> { mtimeMs, buf, etag, gz?, br? }
+async function loadStatic(full) {
+  const st = await stat(full);
+  let e = staticCache.get(full);
+  if (!e || e.mtimeMs !== st.mtimeMs) {
+    const buf = await readFile(full);
+    e = { mtimeMs: st.mtimeMs, buf, etag: `"${crypto.createHash("sha1").update(buf).digest("base64url").slice(0, 20)}"` };
+    staticCache.set(full, e);
+  }
+  return e;
+}
 const notFoundPage = (res, what = "Page") => {
-  res.writeHead(404, { "Content-Type": "text/html" });
+  res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
   res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not found</title><style>body{margin:0;background:#faf7e9;color:#1a221d;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:32rem;margin:14vh auto;padding:0 1.25rem}h1{font-size:2.25rem;letter-spacing:-.03em;line-height:1.1;margin:0 0 .75rem}p{color:#5b665f;margin:0 0 1.5rem}a.b{display:inline-flex;align-items:center;min-height:46px;padding:0 22px;border-radius:999px;background:#0e3727;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>${what} not found</h1><p>Check the address, or head back to the home page.</p><a class="b" href="/">Go to the home page</a></main>`);
 };
 async function serveStatic(req, res, url) {
+  if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405, { Allow: "GET, HEAD" }); return res.end(); }
   const p = url.pathname;
   let file;
   const rm = p.match(/^\/r\/([a-z0-9-]+)(?:\/(guest|kitchen|admin))?\/?$/);
   if (rm) {
     if (!Object.prototype.hasOwnProperty.call(store.restaurants, rm[1])) return notFoundPage(res, "Restaurant");
     file = `${rm[2] || "restaurant"}.html`;
+  } else if (p === "/favicon.ico") {
+    file = "favicon.svg";
   } else {
     file = p === "/" ? "index.html" : p.slice(1);
     // Only /signup, /login and /superadmin are bare top-level pages; /guest etc. are gone.
@@ -932,8 +993,33 @@ async function serveStatic(req, res, url) {
   }
   const full = path.join(PUBLIC_DIR, path.normalize(file));
   if (!full.startsWith(PUBLIC_DIR + path.sep) || !existsSync(full)) return notFoundPage(res);
-  res.writeHead(200, { "Content-Type": MIME[path.extname(full)] || "application/octet-stream" });
-  res.end(await readFile(full));
+  const ext = path.extname(full), e = await loadStatic(full);
+  const headers = { "Content-Type": MIME[ext] || "application/octet-stream", ETag: e.etag, "Cache-Control": CACHE[ext] || "no-cache", Vary: "Accept-Encoding" };
+  if (req.headers["if-none-match"] === e.etag) { res.writeHead(304, headers); return res.end(); }
+  let body = e.buf;
+  if (COMPRESSIBLE.has(ext) && body.length > 512) {
+    const accept = String(req.headers["accept-encoding"] || "");
+    if (/\bbr\b/.test(accept)) { e.br ||= await brotliAsync(e.buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 } }); body = e.br; headers["Content-Encoding"] = "br"; }
+    else if (/\bgzip\b/.test(accept)) { e.gz ||= await gzipAsync(e.buf, { level: 9 }); body = e.gz; headers["Content-Encoding"] = "gzip"; }
+  }
+  headers["Content-Length"] = body.length;
+  res.writeHead(200, headers);
+  res.end(req.method === "HEAD" ? undefined : body);
+}
+
+// Headers for every response. The pages use inline scripts and styles, so the policy allows those, but it still
+// blocks other origins for scripts, connections, frames and forms, which limits what any injected script could do.
+const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+function securityHeaders(req, res, url) {
+  res.setHeader("Content-Security-Policy", CSP);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "same-origin"); // invoice links carry a private token: never send it to another site
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  if (req.headers["x-forwarded-proto"] === "https") res.setHeader("Strict-Transport-Security", "max-age=15552000");
+  // Restaurant pages (their links carry table keys), staff screens and the API are not for search engines.
+  if (url.pathname.startsWith("/r/") || url.pathname.startsWith("/api/") || url.pathname === "/superadmin" || url.pathname === "/qr") res.setHeader("X-Robots-Tag", "noindex, nofollow");
 }
 
 await loadStore();
@@ -941,6 +1027,8 @@ let shuttingDown = false;
 export async function appHandler(req, res) {
   let url;
   try { url = new URL(req.url, `http://${req.headers.host || "localhost"}`); } catch { res.writeHead(400); return res.end("Bad request"); }
+  res.acceptsGzip = /\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""));
+  securityHeaders(req, res, url);
   try {
     if (url.pathname === "/health" || url.pathname === "/api/health") {
       if (shuttingDown) return json(res, 503, { status: "shutting-down" });
@@ -987,6 +1075,10 @@ export default appHandler;
 // by api/[...path].js as a serverless function instead, so do not listen there.
 if (!process.env.VERCEL) {
   const server = http.createServer(appHandler);
+  // Behind Traefik/nginx the proxy reuses idle connections for far longer than Node's 5s default keep-alive;
+  // when Node closes one first, the next request on it fails with a 502. Stay open longer than any proxy idle timeout.
+  server.keepAliveTimeout = parseInt(process.env.KEEP_ALIVE_MS, 10) || 65_000;
+  server.headersTimeout = server.keepAliveTimeout + 1_000;
   server.listen(PORT, () => console.log(`Chopdesk running at http://localhost:${PORT}`));
   // Graceful stop (docker stop / redeploy): refuse new work, close live streams, flush pending writes, release the DB.
   // Node as a container's main process ignores SIGTERM unless it handles it, which means a 10s wait and a hard kill.

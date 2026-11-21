@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#061a12">
 <title>Kitchen</title>
 <link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body class="kds">
@@ -82,13 +83,17 @@ ensureStaff().then((me) => {
   if (!me) return; // sign-in overlay is showing
   $('#staffUser').textContent = me.user + ' · ' + me.role;
   wireSignOut();
+  // Live events refresh the board at once; the timer is a safety net (slow while live, fast when the connection is down).
+  let live = false, last = Date.now(), pending = null;
+  const refresh = () => { clearTimeout(pending); pending = setTimeout(() => { last = Date.now(); load(); }, 250); };
   try {
     const es = new EventSource(UI.R('/events'));
-    es.addEventListener('ready', () => setConn('on', 'Live'));
-    es.addEventListener('order', load); es.addEventListener('assist', load);
-    es.onerror = () => setConn('bad', 'Reconnecting — polling');
+    es.addEventListener('ready', () => { live = true; setConn('on', 'Live'); });
+    es.addEventListener('order', refresh); es.addEventListener('assist', refresh);
+    es.onerror = () => { live = false; setConn('bad', 'Reconnecting — polling'); };
   } catch { setConn('bad', 'Polling'); }
-  setInterval(load, 6000);
+  setInterval(() => { if (!document.hidden && Date.now() - last > (live ? 30000 : 6000)) { last = Date.now(); load(); } }, 2000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   setInterval(() => { if (orders.length) render(); }, 30000);
   load();
 });

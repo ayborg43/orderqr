@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#0e3727">
 <title>Admin</title>
 <link rel="preload" href="/fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -249,8 +250,19 @@ ensureStaff({ roles: ['manager'] }).then((me) => {
   if (!me) return; // sign-in overlay is showing
   $('#staffUser').textContent = me.user + ' · ' + me.role;
   wireSignOut();
-  try { const es = new EventSource(UI.R('/events')); es.addEventListener('order', load); es.addEventListener('menu', load); es.addEventListener('assist', load); } catch {}
-  setInterval(load, 8000); load();
+  // Live events trigger a (debounced) refresh. The timer is only a safety net: slow while the live connection is up,
+  // paused while the tab is hidden, so a screen left open on a phone does not keep downloading the order list.
+  let live = false, last = Date.now(), pending = null;
+  const refresh = () => { clearTimeout(pending); pending = setTimeout(() => { last = Date.now(); load(); }, 400); };
+  try {
+    const es = new EventSource(UI.R('/events'));
+    es.addEventListener('ready', () => { live = true; });
+    ['order', 'menu', 'assist'].forEach(ev => es.addEventListener(ev, refresh));
+    es.onerror = () => { live = false; };
+  } catch {}
+  setInterval(() => { if (!document.hidden && Date.now() - last > (live ? 60000 : 8000)) { last = Date.now(); load(); } }, 2000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  load();
 });
 </script>
 </body>

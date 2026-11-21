@@ -68,6 +68,21 @@ starts empty — there is no demo restaurant and there are no default logins.
   before this change stop working once, so staff sign in again after the upgrade.)
 - In production (`NODE_ENV=production`) the server refuses to start without
   `SESSION_SECRET` and `PUBLIC_BASE_URL`.
+- **Transport.** Static files and JSON replies over 1 KB are brotli/gzip compressed;
+  pages revalidate with an ETag (so a deploy shows at once), CSS/JS are cached for
+  10 minutes and fonts for 30 days. A diner's first page load is about 130 KB and a
+  repeat visit is close to nothing. Staff screens refresh on live events, with a slow
+  safety poll (60 s admin, 30 s kitchen) that pauses while the tab is hidden. The server
+  keeps idle connections open for 65 s (`KEEP_ALIVE_MS`) so Traefik/nginx never reuse a
+  connection Node has already closed.
+- **Headers.** Every response sends a Content-Security-Policy (same-origin only, no
+  framing), `X-Frame-Options`, `nosniff`, a same-origin referrer policy and a
+  permissions policy, plus HSTS when the request came in over https. Restaurant pages,
+  staff screens and the API are marked `noindex`, and `/robots.txt` keeps them out of search.
+- **Live connections** are capped: `STREAMS_PER_IP_RESTAURANT` (default 300, since a
+  restaurant's guests share one Wi-Fi address), `STREAMS_PER_IP` (600) and `MAX_STREAMS` (5000).
+- **Times on invoices and receipts** are printed in `APP_TIMEZONE` (default `Africa/Lagos`),
+  not the server's clock.
 - Data persists to Postgres when `DATABASE_URL` is set, otherwise to
   `data/store.json` (override the folder with `DATA_DIR`). A store from the
   single-restaurant version is upgraded in place under its own name.
@@ -86,7 +101,7 @@ The app ships a [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose
 
 **Option B — Application/Dockerfile:** create an **Application**, build type **Dockerfile**, container port `3000`, same env vars plus `DATABASE_URL` pointing at a Postgres you provision (e.g. a Dokploy database service), and mount a volume at `/app/data` if you want the one-time `store.json` import.
 
-`TRUST_PROXY=1` is set by the image/compose so login/signup throttling sees real guest IPs behind Traefik, not the proxy's. Local check without Dokploy: `docker compose up -d --build` then add a temporary `ports: ["3000:3000"]` mapping (omitted by default — Dokploy itself uses host :3000 and routes via Traefik).
+`TRUST_PROXY=1` is set by the image/compose: it is the number of proxy hops in front of the app (1 for Dokploy's Traefik; use 2 if Cloudflare or another proxy sits in front of Traefik too). The app takes the client address that many entries from the **right** of `X-Forwarded-For`, so a visitor cannot dodge the login and signup limits by sending a made-up header; with `TRUST_PROXY` unset the header is ignored. If the throttles ever look wrong, check this number first. Local check without Dokploy: `docker compose up -d --build` then add a temporary `ports: ["3000:3000"]` mapping (omitted by default — Dokploy itself uses host :3000 and routes via Traefik).
 
 ## Deploy on Vercel
 

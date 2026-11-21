@@ -262,3 +262,138 @@ test("health reports ok and nothing else is exposed there", async () => {
   assert.equal(r.status, 200);
   assert.deepEqual(await r.json(), { status: "ok" });
 });
+
+/* ======================= round two: proxy, transport, headers, caps, time zone ======================= */
+import http from "node:http";
+
+// A raw request: no automatic decompression, so the tests see exactly what the server sent.
+const raw = (port, p, { method = "GET", headers = {} } = {}) => new Promise((resolve, reject) => {
+  const r = http.request({ host: "localhost", port, path: p, method, headers }, (res) => {
+    const chunks = []; res.on("data", (c) => chunks.push(c));
+    res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+  });
+  r.on("error", reject); r.end();
+});
+
+test("login and signup limits use the address our proxy saw, not what the visitor typed", async () => {
+  const s = await startServer(3243, { env: { TRUST_PROXY: "1", SIGNUP_PER_HOUR: "100" } });
+  try {
+    const probe = async (xff, n) => { const out = []; for (let i = 0; i < n; i++) out.push((await fetch(`${s.base}/api/r/${REST}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": xff(i) }, body: JSON.stringify({ username: "admin", password: "wrong" + i }) })).status); return out; };
+    // The visitor rotates the first entry; the proxy appends the real address (9.9.9.9) at the end. Still one client.
+    const rotating = await probe((i) => `fake-${i}, 9.9.9.9`, 10);
+    assert.deepEqual(rotating, [401, 401, 401, 401, 401, 401, 401, 401, 429, 429], "throttled after 8 failures despite the rotating prefix");
+    // A different real client has its own allowance.
+    assert.equal((await probe(() => "fake, 8.8.8.8", 1))[0], 401);
+  } finally { s.stop(); }
+});
+
+test("with two proxy hops (TRUST_PROXY=2) the entry two from the right is the client", async () => {
+  const s = await startServer(3244, { env: { TRUST_PROXY: "2" } });
+  try {
+    const statuses = [];
+    for (let i = 0; i < 10; i++) statuses.push((await fetch(`${s.base}/api/r/${REST}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": `spoof-${i}, 5.5.5.5, 10.0.0.1` }, body: JSON.stringify({ username: "admin", password: "bad" + i }) })).status);
+    assert.equal(statuses[8], 429); assert.equal(statuses[9], 429);
+  } finally { s.stop(); }
+});
+
+test("without TRUST_PROXY the forwarded header is ignored entirely", async () => {
+  const s = await startServer(3245);
+  try {
+    const statuses = [];
+    for (let i = 0; i < 10; i++) statuses.push((await fetch(`${s.base}/api/r/${REST}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": `1.2.3.${i}` }, body: JSON.stringify({ username: "admin", password: "bad" + i }) })).status);
+    assert.equal(statuses[8], 429, "rotating the header does not buy extra attempts");
+  } finally { s.stop(); }
+});
+
+test("idle keep-alive connections outlive Node's 5 second default (proxies reuse them)", async () => {
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  const get = () => new Promise((resolve, reject) => { const r = http.get({ host: "localhost", port: 3230, path: "/health", agent }, (res) => { res.resume(); res.on("end", () => resolve(r.reusedSocket)); }); r.on("error", reject); });
+  try {
+    assert.equal(await get(), false);
+    await new Promise((r) => setTimeout(r, 6500));
+    assert.equal(await get(), true, "the same connection was still open after 6.5s idle, so a proxy would not hit a closed socket");
+  } finally { agent.destroy(); }
+});
+
+test("every response carries security headers; HSTS only over https", async () => {
+  for (const p of ["/", "/signup", "/app.css", `/r/${REST}/guest`, "/api/r/" + REST + "/menu", "/no-such-page", `/r/ghost/admin`]) {
+    const r = await raw(3230, p);
+    assert.match(r.headers["content-security-policy"], /frame-ancestors 'none'/, p);
+    assert.match(r.headers["content-security-policy"], /default-src 'self'/, p);
+    assert.equal(r.headers["x-frame-options"], "DENY", p);
+    assert.equal(r.headers["x-content-type-options"], "nosniff", p);
+    assert.equal(r.headers["referrer-policy"], "same-origin", p);
+    assert.match(r.headers["permissions-policy"], /camera=\(\)/, p);
+    assert.equal(r.headers["strict-transport-security"], undefined, p + " over plain http");
+  }
+  const https = await raw(3230, "/", { headers: { "X-Forwarded-Proto": "https" } });
+  assert.match(https.headers["strict-transport-security"], /max-age=\d+/);
+  assert.match((await raw(3230, `/r/${REST}/admin`)).headers["x-robots-tag"], /noindex/);
+  assert.match((await raw(3230, `/api/r/${REST}/menu`)).headers["x-robots-tag"], /noindex/);
+  assert.equal((await raw(3230, "/")).headers["x-robots-tag"], undefined, "the home page can be indexed");
+});
+
+test("static files are compressed, cached and revalidated", async () => {
+  const plain = await raw(3230, "/app.css", { headers: { "Accept-Encoding": "identity" } });
+  const br = await raw(3230, "/app.css", { headers: { "Accept-Encoding": "br, gzip" } });
+  const gz = await raw(3230, "/app.css", { headers: { "Accept-Encoding": "gzip" } });
+  assert.equal(plain.status, 200); assert.equal(plain.headers["content-encoding"], undefined);
+  assert.equal(br.headers["content-encoding"], "br"); assert.equal(gz.headers["content-encoding"], "gzip");
+  const { gunzipSync, brotliDecompressSync } = await import("node:zlib");
+  assert.equal(gunzipSync(gz.body).toString(), plain.body.toString(), "gzip round-trips");
+  assert.equal(brotliDecompressSync(br.body).toString(), plain.body.toString(), "brotli round-trips");
+  assert.ok(gz.body.length < plain.body.length / 3, `gzip is at least 3x smaller (${plain.body.length} -> ${gz.body.length})`);
+  assert.equal(plain.headers["cache-control"], "public, max-age=600");
+  assert.equal(plain.headers["vary"], "Accept-Encoding");
+  // Revalidation: same ETag means a 304 with no body.
+  const again = await raw(3230, "/app.css", { headers: { "If-None-Match": plain.headers.etag } });
+  assert.equal(again.status, 304); assert.equal(again.body.length, 0);
+  assert.equal((await raw(3230, "/", {})).headers["cache-control"], "no-cache", "pages always revalidate so deploys show up at once");
+  assert.match((await raw(3230, "/fonts/bricolage-grotesque-latin.woff2")).headers["cache-control"], /immutable/);
+  assert.equal((await raw(3230, "/app.css", { method: "HEAD" })).body.length, 0);
+  assert.equal((await raw(3230, "/app.css", { method: "POST" })).status, 405);
+});
+
+test("favicon, robots and link-preview basics exist", async () => {
+  const ico = await raw(3230, "/favicon.ico");
+  assert.equal(ico.status, 200); assert.match(ico.headers["content-type"], /svg/);
+  const robots = await raw(3230, "/robots.txt");
+  assert.equal(robots.status, 200); assert.match(robots.body.toString(), /Disallow: \/r\//);
+  assert.match((await raw(3230, "/")).body.toString(), /property="og:title"/);
+});
+
+test("large JSON replies are gzipped, small ones are not", async () => {
+  const menu = await raw(3230, `/api/r/${REST}/menu`, { headers: { "Accept-Encoding": "gzip" } });
+  assert.equal(menu.headers["content-encoding"], "gzip");
+  const { gunzipSync } = await import("node:zlib");
+  assert.ok(JSON.parse(gunzipSync(menu.body).toString()).items.length > 5);
+  assert.equal((await raw(3230, `/api/r/${REST}/menu`, { headers: { "Accept-Encoding": "identity" } })).headers["content-encoding"], undefined);
+  assert.equal((await raw(3230, "/health", { headers: { "Accept-Encoding": "gzip" } })).headers["content-encoding"], undefined, "tiny replies are sent as is");
+});
+
+test("one address cannot hold unlimited live connections open", async () => {
+  const s = await startServer(3246, { env: { STREAMS_PER_IP_RESTAURANT: "3", STREAMS_PER_IP: "50" } });
+  const acs = [];
+  try {
+    const open = async (id) => { const ac = new AbortController(); acs.push(ac); const r = await fetch(`${s.base}/api/r/${REST}/table-events?${s.q(id)}`, { signal: ac.signal }); return { r, ac }; };
+    const a = await open("1"), b = await open("2"), c = await open("3");
+    assert.deepEqual([a.r.status, b.r.status, c.r.status], [200, 200, 200]);
+    const refused = await open("4");
+    assert.equal(refused.r.status, 429); assert.match((await refused.r.json()).error, /Too many live connections/);
+    a.ac.abort(); await new Promise((r) => setTimeout(r, 300));
+    assert.equal((await open("5")).r.status, 200, "a slot is free again once a stream closes");
+  } finally { acs.forEach((a) => a.abort()); s.stop(); }
+});
+
+test("receipts print times in Lagos time, not the server's", async () => {
+  const when = "2026-03-01T23:30:00.000Z"; // 00:30 on 2 March in Lagos (UTC+1)
+  const rest = mkRest("late-night", { orders: [mkOrder(1001, { createdAt: when, payment: { state: "paid", method: "manual", confirmedAt: when, confirmedBy: "boss" } })], seq: 1001 });
+  const s = await startServer(3247, { store: { restaurants: { "late-night": rest } }, env: { TZ: "UTC" } });
+  try {
+    const r = await fetch(`${s.base}/api/r/late-night/orders/ORD-1001/receipt?t=tok1001`);
+    const html = await r.text();
+    assert.equal(r.status, 200);
+    assert.match(html, /2 Mar 2026, 00:30 WAT/, "Lagos wall-clock time with its zone");
+    assert.ok(!/1 Mar 2026, 23:30/.test(html), "not the UTC time");
+  } finally { s.stop(); }
+});
